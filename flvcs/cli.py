@@ -42,7 +42,10 @@ def init():
     try:
         project_file = get_project_file()
         vcs = FLStudioVCS(project_file)
+        # Create an initial commit
+        commit_hash = vcs.commit("Initial commit")
         click.echo(f"Initialized version control for {project_file.name}")
+        click.echo(f"Created initial commit {commit_hash}")
     except Exception as e:
         click.echo(f"Error: {str(e)}", err=True)
 
