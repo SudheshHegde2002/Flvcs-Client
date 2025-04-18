@@ -32,6 +32,7 @@ class FLStudioVCS:
                 'total_commits': 0,
                 'branches': ['main'],
                 'current_branch': 'main',
+                'branch_history': {},  # Track branch creation history
                 'last_modified': datetime.now().isoformat(),
                 'audio_stats': {},
                 'project_stats': {
@@ -140,12 +141,17 @@ class FLStudioVCS:
         # Copy project file to commit directory
         shutil.copy2(self.project_path, commit_dir / self.project_path.name)
         
+        # Get current branch
+        metadata = self._load_metadata()
+        current_branch = metadata['current_branch']
+        
         # Update commit log
         commit_log = self._load_commit_log()
         commit_log[commit_hash] = {
             'message': message,
             'timestamp': datetime.now().isoformat(),
-            'file': self.project_path.name
+            'file': self.project_path.name,
+            'branch': current_branch
         }
         self._save_commit_log(commit_log)
         
@@ -168,20 +174,181 @@ class FLStudioVCS:
         metadata = self._load_metadata()
         return metadata['audio_stats']
     
-    # Previous methods remain the same
     def list_commits(self):
-        """List all commits with their messages and timestamps"""
+        """List all commits with their messages and timestamps for the current branch including inherited commits"""
+        commit_log = self._load_commit_log()
+        metadata = self._load_metadata()
+        current_branch = metadata['current_branch']
+        
+        # Initialize branch history if it doesn't exist (for backward compatibility)
+        if 'branch_history' not in metadata:
+            metadata['branch_history'] = {}
+            self._save_metadata(metadata)
+        
+        # Store all branch creation points to determine commit inheritance
+        branch_history = metadata.get('branch_history', {})
+        
+        # Get all commits
+        all_commits = []
+        for commit_hash, info in commit_log.items():
+            # Add branch info if not present in older commits
+            if 'branch' not in info:
+                info['branch'] = 'main'
+            
+            # We need to include commits that:
+            # 1. Belong to the current branch directly
+            # 2. Are from parent branches and created before the branch point
+            
+            # Get branch and timestamp
+            commit_branch = info['branch']
+            commit_timestamp = info['timestamp']
+            
+            # If commit is from current branch, include it
+            if commit_branch == current_branch:
+                all_commits.append({
+                    'hash': commit_hash,
+                    'message': info['message'],
+                    'timestamp': info['timestamp'],
+                    'branch': info['branch']
+                })
+            else:
+                # If current branch is 'main', only show main commits
+                if current_branch == 'main':
+                    if commit_branch == 'main':
+                        all_commits.append({
+                            'hash': commit_hash,
+                            'message': info['message'],
+                            'timestamp': info['timestamp'],
+                            'branch': info['branch']
+                        })
+                # For other branches, check if commit is from a parent branch and created before branch point
+                elif current_branch in branch_history:
+                    # If the commit's branch is a parent of the current branch
+                    # and the commit was created before the branch point
+                    parent_branch = branch_history[current_branch]['parent']
+                    branch_point = branch_history[current_branch]['timestamp']
+                    
+                    # Check if commit is from parent or earlier in the branch hierarchy
+                    parent_hierarchy = self._get_branch_hierarchy(parent_branch, branch_history)
+                    
+                    if commit_branch in parent_hierarchy and commit_timestamp < branch_point:
+                        all_commits.append({
+                            'hash': commit_hash,
+                            'message': info['message'],
+                            'timestamp': info['timestamp'],
+                            'branch': info['branch']
+                        })
+                
+        return sorted(all_commits, key=lambda x: x['timestamp'], reverse=True)
+    
+    def _get_branch_hierarchy(self, branch, branch_history):
+        """Get a list of parent branches for the given branch"""
+        hierarchy = [branch]
+        current = branch
+        
+        while current in branch_history and branch_history[current]['parent'] != current:
+            parent = branch_history[current]['parent']
+            hierarchy.append(parent)
+            current = parent
+            
+            # Avoid infinite loops
+            if current in hierarchy[:-1]:
+                break
+                
+        return hierarchy
+        
+    def list_all_commits(self):
+        """List all commits from all branches with their messages and timestamps"""
         commit_log = self._load_commit_log()
         commits = []
         for commit_hash, info in commit_log.items():
+            # Add branch info if not present in older commits
+            if 'branch' not in info:
+                info['branch'] = 'main'
+                
             commits.append({
                 'hash': commit_hash,
                 'message': info['message'],
-                'timestamp': info['timestamp']
+                'timestamp': info['timestamp'],
+                'branch': info['branch']
             })
+                
         return sorted(commits, key=lambda x: x['timestamp'], reverse=True)
     
-  
+    def create_branch(self, branch_name):
+        """Create a new branch and make it the current branch"""
+        metadata = self._load_metadata()
+        
+        # Check if branch already exists
+        if branch_name in metadata['branches']:
+            raise ValueError(f"Branch '{branch_name}' already exists")
+        
+        # Get the latest commit hash from current branch
+        latest_commit = None
+        commits = self.list_commits()
+        if commits:
+            latest_commit = commits[0]['hash']
+        
+        # Get current branch before switching
+        current_branch = metadata['current_branch']
+        
+        # Initialize branch_history if it doesn't exist
+        if 'branch_history' not in metadata:
+            metadata['branch_history'] = {}
+            
+        # Record branch creation history
+        metadata['branch_history'][branch_name] = {
+            'parent': current_branch,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        # Add new branch to metadata
+        metadata['branches'].append(branch_name)
+        metadata['current_branch'] = branch_name
+        self._save_metadata(metadata)
+        
+        # If we have a commit, let's create an initial branch commit
+        if latest_commit:
+            # Copy the latest commit file to the new branch commit
+            latest_commit_file = self.commits_dir / latest_commit / self.project_path.name
+            self.checkout(latest_commit)  # First checkout the latest commit
+            
+            # Then create a new commit for the branch
+            self.commit(f"Initial commit for branch '{branch_name}'")
+        
+        return branch_name
+    
+    def list_branches(self):
+        """List all branches"""
+        metadata = self._load_metadata()
+        return metadata['branches']
+    
+    def get_current_branch(self):
+        """Get the current branch name"""
+        metadata = self._load_metadata()
+        return metadata['current_branch']
+    
+    def switch_branch(self, branch_name):
+        """Switch to a different branch"""
+        metadata = self._load_metadata()
+        
+        # Validate branch exists
+        if branch_name not in metadata['branches']:
+            raise ValueError(f"Branch '{branch_name}' does not exist")
+        
+        # Update current branch
+        metadata['current_branch'] = branch_name
+        self._save_metadata(metadata)
+        
+        # Get latest commit from the branch and checkout
+        branch_commits = [c for c in self.list_all_commits() if c['branch'] == branch_name]
+        if branch_commits:
+            latest_commit = branch_commits[0]['hash']
+            self.checkout(latest_commit)
+            return latest_commit
+        
+        return None
+    
     def checkout(self, commit_hash):
         """Restore project to a specific commit state"""
         commit_log = self._load_commit_log()

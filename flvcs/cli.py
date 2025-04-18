@@ -81,12 +81,13 @@ def log():
             table_data.append([
                 commit['hash'],
                 date,
+                commit['branch'],
                 commit['message']
             ])
             
         click.echo(tabulate(
             table_data,
-            headers=['Commit', 'Date', 'Message'],
+            headers=['Commit', 'Date', 'Branch', 'Message'],
             tablefmt='grid'
         ))
     except Exception as e:
@@ -121,6 +122,14 @@ def status():
         click.echo(f"Total Commits: {metadata['total_commits']}")
         click.echo(f"Current Branch: {metadata['current_branch']}")
         
+        # Show available branches
+        click.echo(f"\nBranches:")
+        for branch in metadata['branches']:
+            if branch == metadata['current_branch']:
+                click.echo(f"  * {branch} (current)")
+            else:
+                click.echo(f"    {branch}")
+        
         # Show size history
         size_history = metadata['project_stats']['size_history']
         if size_history:
@@ -140,6 +149,85 @@ def status():
             for rate, count in audio_stats['sample_rates'].items():
                 click.echo(f"  {rate}: {count}")
             
+    except Exception as e:
+        click.echo(f"Error: {str(e)}", err=True)
+
+@cli.group()
+def branch():
+    """Branch management commands"""
+    pass
+
+@branch.command(name="create")
+@click.argument('branch_name')
+def branch_create(branch_name):
+    """Create a new branch from the current branch"""
+    try:
+        ensure_in_project()
+        project_file = get_project_file()
+        vcs = FLStudioVCS(project_file)
+        
+        # Get current branch before switching
+        current_branch = vcs.get_current_branch()
+        
+        vcs.create_branch(branch_name)
+        click.echo(f"Created new branch '{branch_name}' from '{current_branch}'")
+        click.echo(f"Switched to branch '{branch_name}'")
+    except Exception as e:
+        click.echo(f"Error: {str(e)}", err=True)
+
+@branch.command(name="list")
+def branch_list():
+    """List all branches"""
+    try:
+        ensure_in_project()
+        project_file = get_project_file()
+        vcs = FLStudioVCS(project_file)
+        
+        branches = vcs.list_branches()
+        current_branch = vcs.get_current_branch()
+        
+        click.echo("Branches:")
+        for branch in branches:
+            if branch == current_branch:
+                click.echo(f"  * {branch} (current)")
+            else:
+                click.echo(f"    {branch}")
+    except Exception as e:
+        click.echo(f"Error: {str(e)}", err=True)
+
+@branch.command(name="switch")
+@click.argument('branch_name')
+def branch_switch(branch_name):
+    """Switch to a different branch"""
+    try:
+        ensure_in_project()
+        project_file = get_project_file()
+        vcs = FLStudioVCS(project_file)
+        
+        # Get current branch before switching
+        current_branch = vcs.get_current_branch()
+        
+        if current_branch == branch_name:
+            click.echo(f"Already on branch '{branch_name}'")
+            return
+        
+        commit_hash = vcs.switch_branch(branch_name)
+        click.echo(f"Switched from branch '{current_branch}' to '{branch_name}'")
+        if commit_hash:
+            click.echo(f"Restored project to latest commit {commit_hash}")
+    except Exception as e:
+        click.echo(f"Error: {str(e)}", err=True)
+
+@branch.command(name="current")
+def branch_current():
+    """Show the current branch"""
+    try:
+        ensure_in_project()
+        project_file = get_project_file()
+        vcs = FLStudioVCS(project_file)
+        
+        current_branch = vcs.get_current_branch()
+        click.echo(f"Current branch: {current_branch}")
     except Exception as e:
         click.echo(f"Error: {str(e)}", err=True)
 
