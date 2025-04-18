@@ -188,45 +188,11 @@ class FLStudioVCS:
         if commit_hash not in commit_log:
             raise ValueError(f"Commit {commit_hash} not found")
             
-        # Generate a unique backup filename
-        backup_filename = (
-            f"{self.project_path.stem}_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}{self.project_path.suffix}"
-        )
-        backup_path = self.project_path.parent / backup_filename
-        
-        # Copy current project file to backup
-        shutil.copy2(self.project_path, backup_path)
-        click.echo(f"Backup created: {backup_filename}")
-        
-        # Restore from commit
+        # Restore from commit by replacing the original file
         commit_file = self.commits_dir / commit_hash / self.project_path.name
         shutil.copy2(commit_file, self.project_path)
         
-        return backup_path
-    
-    def list_backups(self):
-        """List all backup files in the project directory"""
-        backup_files = list(self.project_path.parent.glob(f"{self.project_path.stem}_backup_*{self.project_path.suffix}"))
-        return [backup.name for backup in backup_files]
-
-    def restore_backup(self, backup_filename):
-        """Restore from a specific backup file"""
-        backup_path = self.project_path.parent / backup_filename
-        
-        if not backup_path.exists():
-            raise FileNotFoundError(f"Backup file {backup_filename} not found")
-        
-        # Create a new backup of current state
-        new_backup_filename = (
-            f"{self.project_path.stem}_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}{self.project_path.suffix}"
-        )
-        new_backup_path = self.project_path.parent / new_backup_filename
-        shutil.copy2(self.project_path, new_backup_path)
-        
-        # Restore from backup
-        shutil.copy2(backup_path, self.project_path)
-        
-        return new_backup_path
+        return commit_hash
     
     def get_commit_details(self, commit_hash):
         """Get detailed information about a specific commit"""

@@ -100,9 +100,8 @@ def checkout(commit_hash):
         ensure_in_project()
         project_file = get_project_file()
         vcs = FLStudioVCS(project_file)
-        backup_path = vcs.checkout(commit_hash)
-        click.echo(f"Restored to commit {commit_hash}")
-        click.echo(f"Backup saved at: {backup_path}")
+        vcs.checkout(commit_hash)
+        click.echo(f"Restored project to commit {commit_hash}")
     except Exception as e:
         click.echo(f"Error: {str(e)}", err=True)
 
@@ -141,40 +140,6 @@ def status():
             for rate, count in audio_stats['sample_rates'].items():
                 click.echo(f"  {rate}: {count}")
             
-    except Exception as e:
-        click.echo(f"Error: {str(e)}", err=True)
-@cli.command()
-def backups():
-    """List all backup files"""
-    try:
-        ensure_in_project()
-        project_file = get_project_file()
-        vcs = FLStudioVCS(project_file)
-        
-        backup_files = vcs.list_backups()
-        
-        if not backup_files:
-            click.echo("No backup files found")
-            return
-        
-        click.echo("Backup Files:")
-        for backup in backup_files:
-            click.echo(f"  {backup}")
-    except Exception as e:
-        click.echo(f"Error: {str(e)}", err=True)
-
-@cli.command()
-@click.argument('backup_filename')
-def restore(backup_filename):
-    """Restore project from a specific backup file"""
-    try:
-        ensure_in_project()
-        project_file = get_project_file()
-        vcs = FLStudioVCS(project_file)
-        
-        new_backup_path = vcs.restore_backup(backup_filename)
-        click.echo(f"Restored from backup {backup_filename}")
-        click.echo(f"Current state backed up at: {new_backup_path}")
     except Exception as e:
         click.echo(f"Error: {str(e)}", err=True)
 
