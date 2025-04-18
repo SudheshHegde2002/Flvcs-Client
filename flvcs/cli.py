@@ -2,7 +2,7 @@ import click
 import os
 from pathlib import Path
 import json
-from flvcs.main import FLStudioVCS
+from flvcs.main import DAWVCS
 from tabulate import tabulate
 from datetime import datetime
 
@@ -16,32 +16,90 @@ def find_project_root():
     return None
 
 def get_project_file():
-    """Find the FL Studio project file in the current directory"""
-    flp_files = list(Path.cwd().glob('*.flp'))
-    if not flp_files:
-        raise click.ClickException("No .flp file found in current directory")
-    if len(flp_files) > 1:
-        raise click.ClickException("Multiple .flp files found. Please specify which one to track.")
-    return flp_files[0]
+    """Find a suitable project file in the current directory or return the first file"""
+    # Common DAW project file extensions
+    daw_extensions = ['.flp', '.als', '.ptx', '.cpr', '.rpp', '.logic', '.aup', '.aup3', '.sfl', '.sesx', '.reason']
+    
+    # First, look for DAW project files
+    for ext in daw_extensions:
+        project_files = list(Path.cwd().glob(f'*{ext}'))
+        if project_files:
+            if len(project_files) > 1:
+                # If multiple files of the same type, give a warning but return the first one
+                click.echo(f"Warning: Multiple{ext} files found. Using {project_files[0].name}")
+            return project_files[0]
+    
+    # If an existing VCS folder exists, try to find the tracked file from metadata
+    vcs_dir = Path.cwd() / '.flvcs'
+    if vcs_dir.exists():
+        metadata_path = vcs_dir / 'metadata.json'
+        if metadata_path.exists():
+            try:
+                with open(metadata_path, 'r') as f:
+                    metadata = json.load(f)
+                    project_name = metadata.get('project_name', '')
+                    if project_name:
+                        # Try to find files matching that name
+                        for file in Path.cwd().glob(f"{project_name}.*"):
+                            return file
+            except:
+                pass
+    
+    # If no DAW project files, ask the user which file to track
+    all_files = [f for f in Path.cwd().iterdir() if f.is_file() and not f.name.startswith('.')]
+    if not all_files:
+        raise click.ClickException("No files found in current directory to track")
+    
+    if len(all_files) == 1:
+        return all_files[0]
+    
+    # If multiple files, let user select
+    click.echo("Multiple files found. Please specify which file to track with the --file option")
+    for i, file in enumerate(all_files):
+        click.echo(f"{i+1}. {file.name}")
+    
+    choice = click.prompt("Select a file number to track", type=int, default=1)
+    if 1 <= choice <= len(all_files):
+        return all_files[choice-1]
+    else:
+        return all_files[0]
 
 def ensure_in_project():
-    """Ensure we're in a FLVCS project directory"""
+    """Ensure we're in a version control project directory"""
     root = find_project_root()
     if not root:
-        raise click.ClickException("Not in a FLVCS project directory. Run 'flvcs init' first.")
+        raise click.ClickException("Not in an FLVCS project directory. Run 'flvcs init' first.")
     return root
 
 @click.group()
 def cli():
-    """FL Studio Version Control System"""
+    """FLVCS - Version Control System for Digital Audio Workstations"""
     pass
 
 @cli.command()
-def init():
+@click.option('--file', help='Specific file to track')
+def init(file):
     """Initialize version control in current directory"""
     try:
-        project_file = get_project_file()
-        vcs = FLStudioVCS(project_file)
+        # Check if already initialized
+        vcs_dir = Path.cwd() / '.flvcs'
+        if vcs_dir.exists():
+            click.echo("Version control is already initialized in this directory")
+            return
+            
+        # Get the file to track
+        if file:
+            project_file = Path(file)
+            if not project_file.exists():
+                raise click.ClickException(f"File {file} not found")
+        else:
+            try:
+                project_file = get_project_file()
+            except click.ClickException as e:
+                click.echo(f"Error: {str(e)}", err=True)
+                return
+        
+        vcs = DAWVCS(project_file)
         # Create an initial commit
         commit_hash = vcs.commit("Initial commit")
         click.echo(f"Initialized version control for {project_file.name}")
@@ -56,7 +114,7 @@ def commit(message):
     try:
         ensure_in_project()
         project_file = get_project_file()
-        vcs = FLStudioVCS(project_file)
+        vcs = DAWVCS(project_file)
         commit_hash = vcs.commit(message)
         click.echo(f"Created commit {commit_hash}: {message}")
     except Exception as e:
@@ -68,7 +126,7 @@ def log():
     try:
         ensure_in_project()
         project_file = get_project_file()
-        vcs = FLStudioVCS(project_file)
+        vcs = DAWVCS(project_file)
         commits = vcs.list_commits()
         
         if not commits:
@@ -100,7 +158,7 @@ def checkout(commit_hash):
     try:
         ensure_in_project()
         project_file = get_project_file()
-        vcs = FLStudioVCS(project_file)
+        vcs = DAWVCS(project_file)
         vcs.checkout(commit_hash)
         click.echo(f"Restored project to commit {commit_hash}")
     except Exception as e:
@@ -112,11 +170,11 @@ def status():
     try:
         ensure_in_project()
         project_file = get_project_file()
-        vcs = FLStudioVCS(project_file)
+        vcs = DAWVCS(project_file)
         metadata = vcs.get_metadata()
         
         click.echo("\nProject Status:")
-        click.echo(f"Project: {metadata['project_name']}.flp")
+        click.echo(f"Project: {metadata['project_name']}{project_file.suffix}")
         click.echo(f"Created: {metadata['created_at']}")
         click.echo(f"Last Modified: {metadata['last_modified']}")
         click.echo(f"Total Commits: {metadata['total_commits']}")
@@ -138,7 +196,7 @@ def status():
         
         # Show audio statistics
         audio_stats = metadata['audio_stats']
-        if audio_stats and audio_stats['total_audio_files'] > 0:
+        if audio_stats and audio_stats.get('total_audio_files', 0) > 0:
             click.echo("\nAudio Statistics:")
             click.echo(f"Total Audio Files: {audio_stats['total_audio_files']}")
             click.echo(f"Total Duration: {audio_stats['total_duration']:.2f} seconds")
@@ -164,7 +222,7 @@ def branch_create(branch_name):
     try:
         ensure_in_project()
         project_file = get_project_file()
-        vcs = FLStudioVCS(project_file)
+        vcs = DAWVCS(project_file)
         
         # Get current branch before switching
         current_branch = vcs.get_current_branch()
@@ -181,7 +239,7 @@ def branch_list():
     try:
         ensure_in_project()
         project_file = get_project_file()
-        vcs = FLStudioVCS(project_file)
+        vcs = DAWVCS(project_file)
         
         branches = vcs.list_branches()
         current_branch = vcs.get_current_branch()
@@ -202,7 +260,7 @@ def branch_switch(branch_name):
     try:
         ensure_in_project()
         project_file = get_project_file()
-        vcs = FLStudioVCS(project_file)
+        vcs = DAWVCS(project_file)
         
         # Get current branch before switching
         current_branch = vcs.get_current_branch()
@@ -224,7 +282,7 @@ def branch_current():
     try:
         ensure_in_project()
         project_file = get_project_file()
-        vcs = FLStudioVCS(project_file)
+        vcs = DAWVCS(project_file)
         
         current_branch = vcs.get_current_branch()
         click.echo(f"Current branch: {current_branch}")

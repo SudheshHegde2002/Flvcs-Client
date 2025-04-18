@@ -9,7 +9,7 @@ import struct
 import click
 import uuid
 
-class FLStudioVCS:
+class DAWVCS:
     def __init__(self, project_path):
         self.project_path = Path(project_path)
         self.vcs_dir = self.project_path.parent / '.flvcs'

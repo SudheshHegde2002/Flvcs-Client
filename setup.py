@@ -8,10 +8,12 @@ setup(
     install_requires=[
         "click",
         "tabulate",
+        "PyQt5",
     ],
     entry_points={
         "console_scripts": [
             "flvcs=flvcs:cli",
+            "flvcs-gui=flvcs:run_gui",
         ],
     },
 )
