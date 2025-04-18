@@ -185,12 +185,23 @@ class DAWVCS:
             metadata['branch_history'] = {}
             self._save_metadata(metadata)
         
+        # Initialize branch exclusions if it doesn't exist
+        if 'branch_exclusions' not in metadata:
+            metadata['branch_exclusions'] = {}
+        
+        # Get exclusion list for current branch
+        branch_exclusions = metadata['branch_exclusions'].get(current_branch, [])
+        
         # Store all branch creation points to determine commit inheritance
         branch_history = metadata.get('branch_history', {})
         
         # Get all commits
         all_commits = []
         for commit_hash, info in commit_log.items():
+            # Skip excluded commits
+            if commit_hash in branch_exclusions:
+                continue
+                
             # Add branch info if not present in older commits
             if 'branch' not in info:
                 info['branch'] = 'main'
@@ -367,3 +378,158 @@ class DAWVCS:
         if commit_hash not in commit_log:
             raise ValueError(f"Commit {commit_hash} not found")
         return commit_log[commit_hash]
+    
+    def delete_commit(self, commit_hash):
+        """
+        Delete a specific commit from the current branch
+        
+        If the commit is from a parent branch, it will only be hidden from the current branch's history
+        but will remain available to other branches. If it's a direct commit to the current branch,
+        the commit will be fully removed if not used by any other branch.
+        """
+        commit_log = self._load_commit_log()
+        metadata = self._load_metadata()
+        current_branch = metadata['current_branch']
+        
+        # Check if commit exists
+        if commit_hash not in commit_log:
+            raise ValueError(f"Commit {commit_hash} not found")
+        
+        commit_info = commit_log[commit_hash]
+        commit_branch = commit_info.get('branch', 'main')
+        
+        # Set up branch exclusion list if it doesn't exist
+        if 'branch_exclusions' not in metadata:
+            metadata['branch_exclusions'] = {}
+        
+        if current_branch not in metadata['branch_exclusions']:
+            metadata['branch_exclusions'][current_branch] = []
+        
+        # If the commit is from a parent branch, just add it to exclusions for current branch
+        if commit_branch != current_branch:
+            # Add to exclusion list for the current branch
+            if commit_hash not in metadata['branch_exclusions'][current_branch]:
+                metadata['branch_exclusions'][current_branch].append(commit_hash)
+                self._save_metadata(metadata)
+            return commit_hash
+        
+        # If it's a direct commit to the current branch, check if it's used by other branches
+        # first add it to current branch exclusions
+        if commit_hash not in metadata['branch_exclusions'][current_branch]:
+            metadata['branch_exclusions'][current_branch].append(commit_hash)
+        
+        # Check if any other branch depends on this commit
+        is_used_by_other_branches = False
+        for branch_name in metadata['branches']:
+            if branch_name == current_branch:
+                continue
+                
+            # Check if this commit is in the branch's history and not excluded
+            branch_exclusions = metadata['branch_exclusions'].get(branch_name, [])
+            if commit_hash not in branch_exclusions:
+                # For other branches, we need to check if they inherit this commit
+                if branch_name in metadata.get('branch_history', {}):
+                    parent_branch = metadata['branch_history'][branch_name]['parent']
+                    branch_point = metadata['branch_history'][branch_name]['timestamp']
+                    commit_timestamp = commit_info['timestamp']
+                    
+                    # Check if commit is from a parent branch and before branch creation
+                    parent_hierarchy = self._get_branch_hierarchy(parent_branch, metadata.get('branch_history', {}))
+                    
+                    if commit_branch in parent_hierarchy and commit_timestamp < branch_point:
+                        is_used_by_other_branches = True
+                        break
+                
+                # Check if this commit directly belongs to another branch
+                if commit_branch == branch_name:
+                    is_used_by_other_branches = True
+                    break
+        
+        # If not used by other branches, physically remove the commit
+        if not is_used_by_other_branches:
+            # Remove the commit directory
+            commit_dir = self.commits_dir / commit_hash
+            if commit_dir.exists():
+                shutil.rmtree(commit_dir)
+            
+            # Remove from commit log
+            del commit_log[commit_hash]
+            self._save_commit_log(commit_log)
+        
+        self._save_metadata(metadata)
+        return commit_hash
+    
+    def delete_branch(self, branch_name):
+        """
+        Delete a branch and all its unique commits
+        
+        This will only delete commits that are specific to this branch and not inherited by
+        or shared with other branches.
+        """
+        metadata = self._load_metadata()
+        
+        # Check if branch exists
+        if branch_name not in metadata['branches']:
+            raise ValueError(f"Branch '{branch_name}' does not exist")
+        
+        # Cannot delete the current branch or 'main' branch
+        current_branch = metadata['current_branch']
+        if branch_name == current_branch:
+            raise ValueError(f"Cannot delete the current branch. Switch to another branch first.")
+        
+        if branch_name == 'main':
+            raise ValueError(f"Cannot delete the 'main' branch.")
+        
+        # Get all commits specific to this branch
+        commit_log = self._load_commit_log()
+        branch_specific_commits = []
+        
+        for commit_hash, info in commit_log.items():
+            commit_branch = info.get('branch', 'main')
+            
+            # If commit directly belongs to this branch
+            if commit_branch == branch_name:
+                branch_specific_commits.append(commit_hash)
+        
+        # Delete each commit unique to this branch
+        for commit_hash in branch_specific_commits:
+            # Check if commit is used by other branches
+            is_used_by_other_branches = False
+            for other_branch in metadata['branches']:
+                if other_branch == branch_name:
+                    continue
+                    
+                # Check if other branch inherits from this branch
+                if other_branch in metadata.get('branch_history', {}):
+                    other_parent = metadata['branch_history'][other_branch]['parent']
+                    if other_parent == branch_name:
+                        is_used_by_other_branches = True
+                        break
+            
+            # If not used by other branches, remove it
+            if not is_used_by_other_branches:
+                # Remove the commit directory
+                commit_dir = self.commits_dir / commit_hash
+                if commit_dir.exists():
+                    shutil.rmtree(commit_dir)
+                
+                # Remove from commit log
+                if commit_hash in commit_log:
+                    del commit_log[commit_hash]
+        
+        # Remove branch from branches list
+        metadata['branches'].remove(branch_name)
+        
+        # Remove branch exclusions
+        if 'branch_exclusions' in metadata and branch_name in metadata['branch_exclusions']:
+            del metadata['branch_exclusions'][branch_name]
+            
+        # Remove branch history
+        if 'branch_history' in metadata and branch_name in metadata['branch_history']:
+            del metadata['branch_history'][branch_name]
+            
+        # Save changes
+        self._save_commit_log(commit_log)
+        self._save_metadata(metadata)
+        
+        return branch_name

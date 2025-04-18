@@ -253,6 +253,9 @@ class FLVCSMainWindow(QMainWindow):
         self.commits_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
         self.commits_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
         
+        # Action buttons row
+        action_layout = QHBoxLayout()
+        
         # Checkout section
         checkout_layout = QHBoxLayout()
         checkout_layout.addWidget(QLabel("Checkout commit:"))
@@ -262,15 +265,24 @@ class FLVCSMainWindow(QMainWindow):
         
         checkout_layout.addWidget(self.checkout_combo)
         checkout_layout.addWidget(self.checkout_button)
-        checkout_layout.addStretch()
+        
+        # Delete commit section
+        delete_layout = QHBoxLayout()
+        self.delete_commit_button = QPushButton("Delete Commit")
+        self.delete_commit_button.setStyleSheet(f"background-color: #E57373; color: white;")  # Red delete button
+        delete_layout.addWidget(self.delete_commit_button)
+        
+        action_layout.addLayout(checkout_layout, 7)
+        action_layout.addLayout(delete_layout, 3)
         
         commits_layout.addWidget(self.commits_table)
-        commits_layout.addLayout(checkout_layout)
+        commits_layout.addLayout(action_layout)
         
         self.tabs.addTab(commits_widget, "Commits")
         
         # Connect signals
         self.checkout_button.clicked.connect(self.checkout_commit)
+        self.delete_commit_button.clicked.connect(self.delete_commit)
         self.commits_table.itemSelectionChanged.connect(self.on_commit_selected)
     
     def create_branches_tab(self):
@@ -296,6 +308,9 @@ class FLVCSMainWindow(QMainWindow):
         self.branches_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.branches_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         
+        # Branch actions section
+        actions_layout = QHBoxLayout()
+        
         # Switch branch section
         switch_layout = QHBoxLayout()
         switch_layout.addWidget(QLabel("Switch to:"))
@@ -304,16 +319,25 @@ class FLVCSMainWindow(QMainWindow):
         
         switch_layout.addWidget(self.branch_combo)
         switch_layout.addWidget(self.switch_branch_button)
-        switch_layout.addStretch()
+        
+        # Delete branch section
+        delete_layout = QHBoxLayout()
+        self.delete_branch_button = QPushButton("Delete Branch")
+        self.delete_branch_button.setStyleSheet(f"background-color: #E57373; color: white;")  # Red delete button
+        delete_layout.addWidget(self.delete_branch_button)
+        
+        actions_layout.addLayout(switch_layout, 7)
+        actions_layout.addLayout(delete_layout, 3)
         
         branches_layout.addWidget(self.branches_table)
-        branches_layout.addLayout(switch_layout)
+        branches_layout.addLayout(actions_layout)
         
         self.tabs.addTab(branches_widget, "Branches")
         
         # Connect signals
         self.create_branch_button.clicked.connect(self.create_branch)
         self.switch_branch_button.clicked.connect(self.switch_branch)
+        self.delete_branch_button.clicked.connect(self.delete_branch)
         self.branches_table.itemSelectionChanged.connect(self.on_branch_selected)
     
     def create_stats_tab(self):
@@ -357,7 +381,10 @@ class FLVCSMainWindow(QMainWindow):
             vcs_dir = current_dir / '.flvcs'
             
             if vcs_dir.exists():
-                # Try to find the project file from metadata
+                # We found a FLVCS project, now find a file to track
+                all_files = [f for f in current_dir.iterdir() if f.is_file() and not f.name.startswith('.')]
+                
+                # Try to find the project file from metadata first
                 metadata_path = vcs_dir / 'metadata.json'
                 if metadata_path.exists():
                     with open(metadata_path, 'r') as f:
@@ -366,54 +393,80 @@ class FLVCSMainWindow(QMainWindow):
                         if project_name:
                             # Look for files matching the project name
                             for file in current_dir.glob(f"{project_name}.*"):
-                                self.project_file = file
-                                self.vcs = DAWVCS(self.project_file)
-                                self.load_project()
-                                self.status_bar.showMessage(f"Loaded project: {self.project_file.name}")
-                                return
+                                if file.is_file():
+                                    self.project_file = file
+                                    self.vcs = DAWVCS(self.project_file)
+                                    self.load_project()
+                                    self.status_bar.showMessage(f"Loaded FLVCS project: {self.project_file.name}")
+                                    return
                 
-                # If we couldn't find the file from metadata, look for any file
-                all_files = [f for f in current_dir.iterdir() if f.is_file() and not f.name.startswith('.')]
+                # If we couldn't find a file from metadata, use any file
                 if all_files:
                     self.project_file = all_files[0]
                     self.vcs = DAWVCS(self.project_file)
                     self.load_project()
-                    self.status_bar.showMessage(f"Loaded project: {self.project_file.name}")
+                    self.status_bar.showMessage(f"Loaded FLVCS project: {self.project_file.name}")
+                else:
+                    # No suitable files found, create a placeholder file
+                    placeholder_file = current_dir / "placeholder.flvcs"
+                    if not placeholder_file.exists():
+                        with open(placeholder_file, "w") as f:
+                            f.write("FLVCS placeholder file")
+                    self.project_file = placeholder_file
+                    self.vcs = DAWVCS(self.project_file)
+                    self.load_project()
+                    self.status_bar.showMessage(f"Loaded FLVCS project with placeholder file")
+                
         except Exception as e:
             self.status_bar.showMessage(f"Error: {str(e)}")
     
     def initialize_vcs(self):
         """Initialize version control for a project"""
         try:
+            # Let user select which directory to initialize FLVCS in
+            dir_dialog = QFileDialog()
+            dir_dialog.setFileMode(QFileDialog.DirectoryOnly)
+            directory = dir_dialog.getExistingDirectory(
+                self, "Select Directory to Initialize FLVCS", "", QFileDialog.ShowDirsOnly)
+            
+            if not directory:
+                return
+                
+            # Change to the selected directory
+            os.chdir(directory)
             current_dir = Path.cwd()
             vcs_dir = current_dir / '.flvcs'
             
             # Check if already initialized
             if vcs_dir.exists():
                 QMessageBox.information(self, "Already Initialized", 
-                                      "FLVCS is already initialized in this directory.")
+                                       "FLVCS is already initialized in this directory.")
                 
                 # If project is not loaded yet, try to load it
                 if not self.vcs:
                     self.check_current_directory()
                 return
             
-            # Let user select which file to track
-            file_dialog = QFileDialog()
-            file_path, _ = file_dialog.getOpenFileName(
-                self, "Select Project File to Track", "", "All Files (*)")
+            # Get a placeholder file if none exists
+            all_files = [f for f in current_dir.iterdir() if f.is_file() and not f.name.startswith('.')]
             
-            if not file_path:
-                return
-                
-            self.project_file = Path(file_path)
+            if all_files:
+                # Use first existing file
+                self.project_file = all_files[0]
+            else:
+                # Create an empty placeholder file
+                placeholder_file = current_dir / "placeholder.flvcs"
+                with open(placeholder_file, "w") as f:
+                    f.write("FLVCS placeholder file")
+                self.project_file = placeholder_file
+            
             self.vcs = DAWVCS(self.project_file)
             
             # Create initial commit
             commit_hash = self.vcs.commit("Initial commit")
             
             QMessageBox.information(self, "Success", 
-                                   f"Initialized version control for {self.project_file.name}\n"
+                                   f"Initialized FLVCS in {current_dir}\n"
                                    f"Created initial commit: {commit_hash}")
             
             self.load_project()
@@ -422,37 +475,78 @@ class FLVCSMainWindow(QMainWindow):
             QMessageBox.critical(self, "Error", f"Error initializing project: {str(e)}")
     
     def open_project(self):
-        """Open an existing project"""
+        """Open an existing FLVCS repository"""
         try:
-            file_dialog = QFileDialog()
-            file_path, _ = file_dialog.getOpenFileName(
-                self, "Open Project File", "", "All Files (*)")
+            # Let user select either a directory or a file
+            options = QFileDialog.Options()
+            options |= QFileDialog.DontUseNativeDialog
             
-            if file_path:
-                self.project_file = Path(file_path)
-                
-                if not (self.project_file.parent / '.flvcs').exists():
-                    response = QMessageBox.question(
-                        self, "Initialize FLVCS", 
-                        f"This project doesn't have version control yet. Initialize it with FLVCS?",
-                        QMessageBox.Yes | QMessageBox.No
-                    )
+            dialog = QFileDialog()
+            dialog.setOptions(options)
+            dialog.setFileMode(QFileDialog.Directory)
+            dialog.setOption(QFileDialog.ShowDirsOnly, False)  # Allow file selection too
+            dialog.setWindowTitle("Open FLVCS Project or Directory")
+            
+            if dialog.exec_():
+                selected_paths = dialog.selectedFiles()
+                if not selected_paths:
+                    return
                     
-                    if response == QMessageBox.Yes:
-                        os.chdir(self.project_file.parent)
-                        self.vcs = DAWVCS(self.project_file)
-                        commit_hash = self.vcs.commit("Initial commit")
-                        QMessageBox.information(
-                            self, "Success", 
-                            f"Initialized version control for {self.project_file.name}\n"
-                            f"Created initial commit: {commit_hash}"
+                selected_path = Path(selected_paths[0])
+                
+                # Check if it's a directory or file
+                if selected_path.is_dir():
+                    # Change to the directory
+                    os.chdir(selected_path)
+                    
+                    # Check if it has FLVCS initialized
+                    if not (selected_path / '.flvcs').exists():
+                        response = QMessageBox.question(
+                            self, "Initialize FLVCS", 
+                            f"This directory doesn't have FLVCS initialized. Initialize it?",
+                            QMessageBox.Yes | QMessageBox.No
                         )
+                        
+                        if response == QMessageBox.Yes:
+                            self.initialize_vcs()  # Use the initialize method
+                        return
+                    
+                    # Find a suitable project file
+                    all_files = [f for f in selected_path.iterdir() if f.is_file() and not f.name.startswith('.')]
+                    if all_files:
+                        self.project_file = all_files[0]
                     else:
+                        # No files found
+                        QMessageBox.warning(self, "No Files", "No files found in this directory.")
                         return
                 else:
-                    self.vcs = DAWVCS(self.project_file)
+                    # It's a file, use it as project file
+                    self.project_file = selected_path
+                    
+                    # Make sure its directory has FLVCS
+                    if not (self.project_file.parent / '.flvcs').exists():
+                        response = QMessageBox.question(
+                            self, "Initialize FLVCS", 
+                            f"This directory doesn't have FLVCS initialized. Initialize it?",
+                            QMessageBox.Yes | QMessageBox.No
+                        )
+                        
+                        if response == QMessageBox.Yes:
+                            os.chdir(self.project_file.parent)
+                            self.vcs = DAWVCS(self.project_file)
+                            commit_hash = self.vcs.commit("Initial commit")
+                            QMessageBox.information(
+                                self, "Success", 
+                                f"Initialized FLVCS in {self.project_file.parent}\n"
+                                f"Created initial commit: {commit_hash}"
+                            )
+                        else:
+                            return
                 
+                # Initialize VCS with the project file
+                self.vcs = DAWVCS(self.project_file)
                 self.load_project()
+                self.status_bar.showMessage(f"Opened FLVCS project with {self.project_file.name}")
                 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error opening project: {str(e)}")
@@ -672,6 +766,81 @@ class FLVCSMainWindow(QMainWindow):
         """Refresh all UI elements"""
         self.load_project()
         self.status_bar.showMessage("UI refreshed")
+    
+    def delete_commit(self):
+        """Delete selected commit"""
+        if not self.vcs:
+            return
+            
+        selected_items = self.commits_table.selectedItems()
+        if not selected_items:
+            QMessageBox.warning(self, "No Commit Selected", "Please select a commit to delete.")
+            return
+            
+        row = selected_items[0].row()
+        commit_hash = self.commits_table.item(row, 0).text()
+        commit_message = self.commits_table.item(row, 3).text()
+        
+        # Confirm deletion
+        response = QMessageBox.question(
+            self, "Confirm Deletion", 
+            f"Are you sure you want to delete commit {commit_hash} ({commit_message})?\n\n"
+            f"This action cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No  # Default is No to prevent accidental deletion
+        )
+        
+        if response != QMessageBox.Yes:
+            return
+            
+        try:
+            self.vcs.delete_commit(commit_hash)
+            QMessageBox.information(self, "Success", f"Deleted commit {commit_hash} from the current branch")
+            self.refresh_ui()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error deleting commit: {str(e)}")
+    
+    def delete_branch(self):
+        """Delete selected branch"""
+        if not self.vcs:
+            return
+            
+        selected_items = self.branches_table.selectedItems()
+        if not selected_items:
+            QMessageBox.warning(self, "No Branch Selected", "Please select a branch to delete.")
+            return
+            
+        row = selected_items[0].row()
+        branch_name = self.branches_table.item(row, 0).text()
+        
+        # Check if trying to delete current branch or main
+        current_branch = self.vcs.get_current_branch()
+        if branch_name == current_branch:
+            QMessageBox.warning(self, "Cannot Delete", "Cannot delete the current branch. Switch to another branch first.")
+            return
+            
+        if branch_name == 'main':
+            QMessageBox.warning(self, "Cannot Delete", "Cannot delete the 'main' branch.")
+            return
+            
+        # Confirm deletion
+        response = QMessageBox.question(
+            self, "Confirm Deletion", 
+            f"Are you sure you want to delete branch '{branch_name}' and all its unique commits?\n\n"
+            f"This action cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No  # Default is No to prevent accidental deletion
+        )
+        
+        if response != QMessageBox.Yes:
+            return
+            
+        try:
+            self.vcs.delete_branch(branch_name)
+            QMessageBox.information(self, "Success", f"Deleted branch '{branch_name}' and its unique commits")
+            self.refresh_ui()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error deleting branch: {str(e)}")
 
 
 def run_gui():

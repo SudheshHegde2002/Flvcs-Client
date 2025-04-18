@@ -289,5 +289,61 @@ def branch_current():
     except Exception as e:
         click.echo(f"Error: {str(e)}", err=True)
 
+@branch.command(name="delete")
+@click.argument('branch_name')
+def branch_delete(branch_name):
+    """Delete a branch and its unique commits"""
+    try:
+        ensure_in_project()
+        project_file = get_project_file()
+        vcs = DAWVCS(project_file)
+        
+        # Get current branch before deletion
+        current_branch = vcs.get_current_branch()
+        
+        if branch_name == current_branch:
+            click.echo(f"Cannot delete the current branch. Switch to another branch first.")
+            return
+        
+        if branch_name == 'main':
+            click.echo(f"Cannot delete the 'main' branch.")
+            return
+        
+        # Confirm deletion
+        if not click.confirm(f"Are you sure you want to delete branch '{branch_name}'? This cannot be undone."):
+            click.echo("Branch deletion cancelled.")
+            return
+        
+        vcs.delete_branch(branch_name)
+        click.echo(f"Deleted branch '{branch_name}' and its unique commits")
+    except Exception as e:
+        click.echo(f"Error: {str(e)}", err=True)
+
+@cli.command()
+@click.argument('commit_hash')
+def delete(commit_hash):
+    """Delete a specific commit from the current branch"""
+    try:
+        ensure_in_project()
+        project_file = get_project_file()
+        vcs = DAWVCS(project_file)
+        
+        # Get commit details before deletion
+        try:
+            commit_details = vcs.get_commit_details(commit_hash)
+            commit_message = commit_details.get('message', 'Unknown commit')
+        except:
+            commit_message = 'Unknown commit'
+        
+        # Confirm deletion
+        if not click.confirm(f"Are you sure you want to delete commit {commit_hash} ({commit_message})? This cannot be undone."):
+            click.echo("Commit deletion cancelled.")
+            return
+        
+        vcs.delete_commit(commit_hash)
+        click.echo(f"Deleted commit {commit_hash} from the current branch")
+    except Exception as e:
+        click.echo(f"Error: {str(e)}", err=True)
+
 if __name__ == '__main__':
     cli()
