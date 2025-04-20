@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 import json
 from flvcs.main import DAWVCS
-from flvcs.data_utils import upload_data, download_data, ensure_authenticated, delete_user_auth
+from flvcs.data_utils import upload_data, download_data, ensure_authenticated, delete_user_auth, reset_upload_tracking
 from tabulate import tabulate
 from datetime import datetime
 
@@ -347,7 +347,9 @@ def delete(commit_hash):
         click.echo(f"Error: {str(e)}", err=True)
 
 @cli.command()
-def upload():
+@click.option('--force', is_flag=True, help='Force upload even if no new commits are present')
+@click.option('--debug', is_flag=True, help='Print debug information for troubleshooting')
+def upload(force, debug):
     """Upload the current branch data to the server"""
     try:
         ensure_in_project()
@@ -359,18 +361,53 @@ def upload():
         current_branch = vcs.get_current_branch()
         
         click.echo(f"Uploading branch '{current_branch}' to server...")
-        success = upload_data(project_root, current_branch)
+        
+        # Show stats about commits if debug is on
+        if debug:
+            metadata = vcs.get_metadata()
+            branch_history = metadata.get('branch_history', {})
+            commit_log = vcs._load_commit_log()
+            
+            click.echo(f"DEBUG: Total commits in log: {len(commit_log)}")
+            
+            # Count commits by branch
+            branch_counts = {}
+            for _, info in commit_log.items():
+                branch = info.get('branch', 'main')
+                branch_counts[branch] = branch_counts.get(branch, 0) + 1
+                
+            click.echo(f"DEBUG: Commits by branch: {branch_counts}")
+            
+            # Check if the branch exists in branch_history
+            if current_branch in branch_history:
+                branch_info = branch_history[current_branch]
+                if isinstance(branch_info, dict) and 'commits' in branch_info:
+                    click.echo(f"DEBUG: Branch '{current_branch}' has {len(branch_info['commits'])} commits in branch_history")
+                else:
+                    click.echo(f"DEBUG: Branch '{current_branch}' exists in branch_history but has no 'commits' field")
+            else:
+                click.echo(f"DEBUG: Branch '{current_branch}' not found in branch_history")
+                
+            # Count commits in log for current branch
+            current_branch_commits = [h for h, info in commit_log.items() if info.get('branch') == current_branch]
+            click.echo(f"DEBUG: Found {len(current_branch_commits)} commits for branch '{current_branch}' in commit log")
+        
+        # Add a parameter to upload_data to support force option
+        success = upload_data(project_root, current_branch, force=force, debug=debug)
         
         if success:
             click.echo(f"Successfully uploaded branch '{current_branch}'")
         else:
             click.echo(f"Failed to upload branch '{current_branch}'")
+            click.echo("You can try using 'flvcs reset-tracking' to reset upload tracking,")
+            click.echo("or use 'flvcs upload --force' to force upload.")
     except Exception as e:
         click.echo(f"Error: {str(e)}", err=True)
 
 @cli.command()
 @click.option('--branch', help='Specific branch to download (defaults to current branch)')
-def download(branch):
+@click.option('--debug', is_flag=True, help='Print debug information for troubleshooting')
+def download(branch, debug):
     """Download branch data from the server and update local files"""
     try:
         ensure_in_project()
@@ -385,7 +422,7 @@ def download(branch):
             branch_name = vcs.get_current_branch()
         
         click.echo(f"Downloading branch '{branch_name}' from server...")
-        success = download_data(project_root, branch_name)
+        success = download_data(project_root, branch_name, debug=debug)
         
         if success:
             click.echo(f"Successfully downloaded branch '{branch_name}'")
@@ -414,6 +451,116 @@ def delete_cred():
             click.echo("You will need to reauthenticate on your next upload or download.")
         else:
             click.echo("No authentication credentials found.")
+    except Exception as e:
+        click.echo(f"Error: {str(e)}", err=True)
+
+@cli.command(name="reset-tracking")
+@click.option('--branch', help='Specific branch to reset tracking for (defaults to all branches)')
+def reset_tracking(branch):
+    """Reset upload tracking to allow re-uploading the same commits"""
+    try:
+        ensure_in_project()
+        project_root = find_project_root()
+        
+        # Get branch name if specific branch requested
+        if branch:
+            branch_name = branch
+            # Verify branch exists
+            project_file = get_project_file()
+            vcs = DAWVCS(project_file)
+            branches = vcs.list_branches()
+            if branch_name not in branches:
+                click.echo(f"Error: Branch '{branch_name}' does not exist.", err=True)
+                return
+        else:
+            branch_name = None
+            
+        success = reset_upload_tracking(project_root, branch_name)
+        
+        if success:
+            if branch_name:
+                click.echo(f"Successfully reset upload tracking for branch '{branch_name}'.")
+                click.echo("You can now upload this branch again, even without new commits.")
+            else:
+                click.echo("Successfully reset upload tracking for all branches.")
+                click.echo("You can now upload any branch again, even without new commits.")
+        else:
+            click.echo("Failed to reset upload tracking.", err=True)
+    except Exception as e:
+        click.echo(f"Error: {str(e)}", err=True)
+
+@cli.command(name="fix-timestamps")
+def fix_timestamps():
+    """Fix any timestamp issues in the repository"""
+    try:
+        ensure_in_project()
+        project_root = find_project_root()
+        
+        # Get the .flvcs directory
+        flvcs_dir = project_root / '.flvcs'
+        commit_log_path = flvcs_dir / 'commit_log.json'
+        
+        if not commit_log_path.exists():
+            click.echo("No commit log found. Nothing to fix.")
+            return
+            
+        with open(commit_log_path, 'r') as f:
+            commit_log = json.load(f)
+            
+        click.echo(f"Checking {len(commit_log)} commits for timestamp issues...")
+        
+        fixed_count = 0
+        for commit_hash, info in commit_log.items():
+            timestamp = info.get('timestamp', '')
+            
+            try:
+                # Check if the timestamp is valid
+                datetime.fromisoformat(timestamp)
+            except (ValueError, TypeError):
+                # Try to fix the timestamp
+                try:
+                    if 'T' in timestamp and '+' in timestamp:
+                        # Fix timezone issue by removing timezone part
+                        fixed_timestamp = timestamp.split('+')[0]
+                        commit_log[commit_hash]['timestamp'] = fixed_timestamp
+                        fixed_count += 1
+                    elif len(timestamp) == 10 and timestamp.count('-') == 2:
+                        # Fix date-only format by adding time
+                        fixed_timestamp = timestamp + "T00:00:00"
+                        commit_log[commit_hash]['timestamp'] = fixed_timestamp
+                        fixed_count += 1
+                    elif timestamp.isdigit():
+                        # Fix numeric timestamp
+                        dt = datetime.fromtimestamp(float(timestamp))
+                        fixed_timestamp = dt.isoformat()
+                        commit_log[commit_hash]['timestamp'] = fixed_timestamp
+                        fixed_count += 1
+                    else:
+                        # Cannot fix, set to current time
+                        fixed_timestamp = datetime.now().isoformat()
+                        commit_log[commit_hash]['timestamp'] = fixed_timestamp
+                        fixed_count += 1
+                except Exception:
+                    # If all else fails, set to current time
+                    fixed_timestamp = datetime.now().isoformat()
+                    commit_log[commit_hash]['timestamp'] = fixed_timestamp
+                    fixed_count += 1
+        
+        if fixed_count > 0:
+            # Save the fixed commit log
+            with open(commit_log_path, 'w') as f:
+                json.dump(commit_log, f, indent=2)
+                
+            click.echo(f"Fixed {fixed_count} commit timestamps.")
+            
+            # Also reset upload tracking to be safe
+            last_upload_path = flvcs_dir / 'last_upload.json'
+            if last_upload_path.exists():
+                os.unlink(last_upload_path)
+                click.echo("Reset upload tracking to ensure proper upload/download functionality.")
+        else:
+            click.echo("No timestamp issues found.")
+            
     except Exception as e:
         click.echo(f"Error: {str(e)}", err=True)
 

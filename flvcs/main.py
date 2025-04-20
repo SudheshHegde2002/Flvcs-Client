@@ -156,7 +156,57 @@ class DAWVCS:
         self._save_commit_log(commit_log)
         
         # Update metadata
-        self._update_metadata()
+        metadata = self._load_metadata()
+        metadata['total_commits'] += 1
+        metadata['last_modified'] = datetime.now().isoformat()
+        
+        # Initialize branch_history if it doesn't exist
+        if 'branch_history' not in metadata:
+            metadata['branch_history'] = {}
+        
+        # Make sure current branch exists in branch_history
+        if current_branch not in metadata['branch_history']:
+            metadata['branch_history'][current_branch] = {
+                'parent': 'main',
+                'timestamp': datetime.now().isoformat(),
+                'commits': []
+            }
+        
+        # Make sure the branch_history has the correct structure
+        if isinstance(metadata['branch_history'][current_branch], list):
+            # Convert from old format to new format
+            old_commits = metadata['branch_history'][current_branch]
+            metadata['branch_history'][current_branch] = {
+                'parent': 'main',
+                'timestamp': datetime.now().isoformat(),
+                'commits': old_commits
+            }
+        
+        # Make sure there's a commits list
+        if 'commits' not in metadata['branch_history'][current_branch]:
+            metadata['branch_history'][current_branch]['commits'] = []
+        
+        # Add the commit hash to the branch's commit list
+        if commit_hash not in metadata['branch_history'][current_branch]['commits']:
+            metadata['branch_history'][current_branch]['commits'].append(commit_hash)
+        
+        # Update file size history
+        if 'project_stats' not in metadata:
+            metadata['project_stats'] = {'size_history': []}
+            
+        size_stats = {
+            'timestamp': datetime.now().isoformat(),
+            'size_bytes': os.path.getsize(self.project_path)
+        }
+        metadata['project_stats']['size_history'].append(size_stats)
+        
+        # Update audio statistics if there are exported audio files
+        audio_dir = self.project_path.parent / 'Rendered'
+        if audio_dir.exists():
+            audio_stats = self._analyze_audio_files(audio_dir)
+            metadata['audio_stats'] = audio_stats
+        
+        self._save_metadata(metadata)
         
         return commit_hash
     
@@ -236,19 +286,21 @@ class DAWVCS:
                 elif current_branch in branch_history:
                     # If the commit's branch is a parent of the current branch
                     # and the commit was created before the branch point
-                    parent_branch = branch_history[current_branch]['parent']
-                    branch_point = branch_history[current_branch]['timestamp']
-                    
-                    # Check if commit is from parent or earlier in the branch hierarchy
-                    parent_hierarchy = self._get_branch_hierarchy(parent_branch, branch_history)
-                    
-                    if commit_branch in parent_hierarchy and commit_timestamp < branch_point:
-                        all_commits.append({
-                            'hash': commit_hash,
-                            'message': info['message'],
-                            'timestamp': info['timestamp'],
-                            'branch': info['branch']
-                        })
+                    branch_info = branch_history[current_branch]
+                    if isinstance(branch_info, dict) and 'parent' in branch_info:
+                        parent_branch = branch_info['parent']
+                        branch_point = branch_info['timestamp']
+                        
+                        # Check if commit is from parent or earlier in the branch hierarchy
+                        parent_hierarchy = self._get_branch_hierarchy(parent_branch, branch_history)
+                        
+                        if commit_branch in parent_hierarchy and commit_timestamp < branch_point:
+                            all_commits.append({
+                                'hash': commit_hash,
+                                'message': info['message'],
+                                'timestamp': info['timestamp'],
+                                'branch': info['branch']
+                            })
                 
         return sorted(all_commits, key=lambda x: x['timestamp'], reverse=True)
     
@@ -257,12 +309,21 @@ class DAWVCS:
         hierarchy = [branch]
         current = branch
         
-        while current in branch_history and branch_history[current]['parent'] != current:
-            parent = branch_history[current]['parent']
+        while current in branch_history:
+            branch_info = branch_history[current]
+            # Skip if branch info is a list (old format) or doesn't have parent info
+            if not isinstance(branch_info, dict) or 'parent' not in branch_info:
+                break
+                
+            parent = branch_info['parent']
+            # Avoid infinite loops if a branch is its own parent
+            if parent == current:
+                break
+                
             hierarchy.append(parent)
             current = parent
             
-            # Avoid infinite loops
+            # Avoid infinite loops in the branch hierarchy
             if current in hierarchy[:-1]:
                 break
                 
@@ -310,7 +371,8 @@ class DAWVCS:
         # Record branch creation history
         metadata['branch_history'][branch_name] = {
             'parent': current_branch,
-            'timestamp': datetime.now().isoformat()
+            'timestamp': datetime.now().isoformat(),
+            'commits': []
         }
         
         # Add new branch to metadata

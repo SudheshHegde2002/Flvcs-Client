@@ -16,7 +16,7 @@ from PyQt5.QtCore import Qt, QSize
 from PyQt5.QtGui import QFont, QColor, QPalette, QIcon
 
 from flvcs.main import DAWVCS
-from flvcs.data_utils import upload_data, download_data, ensure_authenticated, load_user_auth, delete_user_auth
+from flvcs.data_utils import upload_data, download_data, ensure_authenticated, load_user_auth, delete_user_auth, reset_upload_tracking
 
 # Define theme colors
 COLORS = {
@@ -275,8 +275,11 @@ class FLVCSMainWindow(QMainWindow):
         self.upload_button.setStyleSheet(f"background-color: #3F51B5; color: white;")  # Indigo
         self.download_button = QPushButton("Download")
         self.download_button.setStyleSheet(f"background-color: #3F51B5; color: white;")  # Indigo
+        self.reset_tracking_button = QPushButton("Reset Tracking")
+        self.reset_tracking_button.setStyleSheet(f"background-color: #FF9800; color: white;")  # Orange
         actions_row3.addWidget(self.upload_button)
         actions_row3.addWidget(self.download_button)
+        actions_row3.addWidget(self.reset_tracking_button)
         
         # Add credentials management
         actions_row4 = QHBoxLayout()
@@ -301,6 +304,7 @@ class FLVCSMainWindow(QMainWindow):
         self.upload_button.clicked.connect(self.upload_branch)
         self.download_button.clicked.connect(self.download_branch)
         self.delete_cred_button.clicked.connect(self.delete_credentials)
+        self.reset_tracking_button.clicked.connect(self.reset_upload_tracking)
     
     def create_commits_tab(self):
         commits_widget = QWidget()
@@ -941,11 +945,55 @@ class FLVCSMainWindow(QMainWindow):
             # Get the project root
             project_root = Path.cwd()
             
+            # First attempt a non-forced upload
+            force = False
+            
             # Show a loading message
             self.status_bar.showMessage(f"Uploading branch '{current_branch}' to server...")
             
             # Perform the upload with the auth_data we already have
-            success = upload_data(project_root, current_branch, auth_data)
+            success = upload_data(project_root, current_branch, auth_data, force)
+            
+            # If the upload failed due to no new commits, offer to force upload
+            if not success:
+                # Check if there are any commits at all - if not, don't offer force
+                flvcs_dir = project_root / '.flvcs'
+                commit_log_path = flvcs_dir / 'commit_log.json'
+                metadata_path = flvcs_dir / 'metadata.json'
+                
+                if not commit_log_path.exists() or not metadata_path.exists():
+                    QMessageBox.warning(self, "Upload Failed", 
+                                      "No commits found for this branch. Cannot upload.")
+                    self.status_bar.showMessage(f"Upload failed - no commits")
+                    return
+                    
+                # Load the metadata to check if the branch has commits
+                with open(metadata_path, 'r') as f:
+                    metadata = json.load(f)
+                    branch_history = metadata.get('branch_history', {})
+                    branch_commits = branch_history.get(current_branch, [])
+                    
+                if not branch_commits:
+                    QMessageBox.warning(self, "Upload Failed", 
+                                      "No commits found for this branch. Cannot upload.")
+                    self.status_bar.showMessage(f"Upload failed - no commits")
+                    return
+                    
+                # We have commits but they haven't changed - ask to force upload
+                result = QMessageBox.question(
+                    self, "No New Commits", 
+                    "No new commits since last upload. Do you want to force upload anyway?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No
+                )
+                
+                if result == QMessageBox.Yes:
+                    force = True
+                    self.status_bar.showMessage(f"Force uploading branch '{current_branch}' to server...")
+                    success = upload_data(project_root, current_branch, auth_data, force)
+                else:
+                    self.status_bar.showMessage(f"Upload cancelled")
+                    return
             
             if success:
                 QMessageBox.information(self, "Upload Successful", 
@@ -953,7 +1001,7 @@ class FLVCSMainWindow(QMainWindow):
                 self.status_bar.showMessage(f"Upload successful")
             else:
                 QMessageBox.warning(self, "Upload Failed", 
-                                    f"Failed to upload branch '{current_branch}' to server.")
+                                  f"Failed to upload branch '{current_branch}' to server.")
                 self.status_bar.showMessage(f"Upload failed")
                 
         except Exception as e:
@@ -1064,6 +1112,72 @@ class FLVCSMainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error deleting credentials: {str(e)}")
             self.status_bar.showMessage("Error deleting credentials")
+
+    def reset_upload_tracking(self):
+        """Reset upload tracking for the current branch or all branches"""
+        if not self.vcs:
+            QMessageBox.warning(self, "No Project", "No project loaded.")
+            return
+        
+        try:
+            current_branch = self.vcs.get_current_branch()
+            branches = self.vcs.list_branches()
+            
+            # Let the user choose which branch to reset or all branches
+            options = branches + ["All Branches"]
+            branch_name, ok = QInputDialog.getItem(
+                self, "Reset Upload Tracking", 
+                "Select which branch tracking to reset:", 
+                options, 
+                branches.index(current_branch) if current_branch in branches else 0,
+                False
+            )
+            
+            if not ok or not branch_name:
+                return
+            
+            # Get the project root
+            project_root = Path.cwd()
+            
+            if branch_name == "All Branches":
+                branch_param = None
+                message = "Are you sure you want to reset upload tracking for all branches?\n\n" \
+                         "This will allow re-uploading all branches even without new commits."
+            else:
+                branch_param = branch_name
+                message = f"Are you sure you want to reset upload tracking for branch '{branch_name}'?\n\n" \
+                          f"This will allow re-uploading this branch even without new commits."
+            
+            # Confirm action
+            result = QMessageBox.question(
+                self, "Confirm Reset", 
+                message,
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            
+            if result != QMessageBox.Yes:
+                return
+            
+            success = reset_upload_tracking(project_root, branch_param)
+            
+            if success:
+                if branch_param:
+                    QMessageBox.information(self, "Success", 
+                                          f"Successfully reset upload tracking for branch '{branch_param}'.\n\n"
+                                          f"You can now upload this branch again.")
+                else:
+                    QMessageBox.information(self, "Success", 
+                                          "Successfully reset upload tracking for all branches.\n\n"
+                                          "You can now upload any branch again.")
+                self.status_bar.showMessage("Upload tracking reset successful")
+            else:
+                QMessageBox.warning(self, "Failed", "Failed to reset upload tracking.")
+                self.status_bar.showMessage("Upload tracking reset failed")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error resetting upload tracking: {str(e)}")
+            self.status_bar.showMessage("Error resetting upload tracking")
 
 
 def run_gui():

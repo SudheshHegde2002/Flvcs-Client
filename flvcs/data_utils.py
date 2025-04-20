@@ -10,6 +10,7 @@ import tempfile
 import zipfile
 import shutil
 import getpass  # Add getpass module for secure input
+from datetime import datetime
 
 # API endpoints - centralized for easier updates when moving to production
 API_ENDPOINTS = {
@@ -257,17 +258,181 @@ def extract_archive(archive_path, project_root):
                         shutil.copy2(src_path, dest_path)
                         print(f"Restored project file: {item}")
 
-def upload_data(project_root, branch_name, auth_data=None):
+def upload_data(project_root, branch_name, auth_data=None, force=False, debug=False):
     """Upload FLVCS data for a branch to the server
     
     Args:
         project_root: Path to the project root
         branch_name: Name of the branch to upload
         auth_data: Optional authentication data. If provided, authentication step is skipped
+        force: If True, upload even if no new commits since last upload
+        debug: If True, print debug information
+        
+    Returns:
+        bool: True if upload was successful, False otherwise
     """
     # Ensure authentication if not provided
     if auth_data is None:
         auth_data = ensure_authenticated()
+    
+    # Force upload if requested
+    if force:
+        if debug: print(f"Force upload requested. Will upload branch '{branch_name}' regardless of commit status.")
+        
+    # Check if there are new commits since last upload
+    flvcs_dir = project_root / '.flvcs'
+    last_upload_path = flvcs_dir / 'last_upload.json'
+    
+    # Load commit log
+    commit_log_path = flvcs_dir / 'commit_log.json'
+    if not commit_log_path.exists():
+        print("No commits found. Nothing to upload.")
+        return False
+        
+    with open(commit_log_path, 'r') as f:
+        commit_log = json.load(f)
+        if debug: print(f"DEBUG: Loaded commit log with {len(commit_log)} commits")
+    
+    # Load metadata to get branch history
+    metadata_path = flvcs_dir / 'metadata.json'
+    if metadata_path.exists():
+        with open(metadata_path, 'r') as f:
+            metadata = json.load(f)
+    else:
+        print("ERROR: metadata.json not found")
+        return False
+
+    # Get commits for the branch - first check branch_history for a list of commits
+    branch_history = metadata.get('branch_history', {})
+    branch_commits = []
+    
+    # Check if branch exists in branch_history and has a 'commits' field
+    if branch_name in branch_history:
+        branch_info = branch_history[branch_name]
+        if isinstance(branch_info, dict) and 'commits' in branch_info:
+            branch_commits = branch_info['commits']
+            if debug: print(f"DEBUG: Found {len(branch_commits)} commits for branch '{branch_name}' in branch_history.commits")
+        elif isinstance(branch_info, list):
+            # For backwards compatibility with older format
+            branch_commits = branch_info
+            if debug: print(f"DEBUG: Found {len(branch_commits)} commits for branch '{branch_name}' in old-style branch_history")
+    
+    # If no commits found in branch_history, look for commits with matching branch in commit_log
+    if not branch_commits:
+        for commit_hash, info in commit_log.items():
+            if info.get('branch') == branch_name:
+                branch_commits.append(commit_hash)
+        if debug: print(f"DEBUG: Found {len(branch_commits)} commits for branch '{branch_name}' by searching commit_log")
+    
+    if not branch_commits:
+        print(f"No commits found for branch '{branch_name}'. Nothing to upload.")
+        return False
+    
+    # Get the latest commit time for the branch
+    latest_commit_time = None
+    valid_timestamps = 0
+    
+    # Find the latest commit time (as ISO string)
+    for i, commit_hash in enumerate(branch_commits):
+        if debug: print(f"DEBUG: Processing commit {i+1}/{len(branch_commits)}: {commit_hash}")
+        
+        if commit_hash in commit_log:
+            commit_info = commit_log[commit_hash]
+            commit_time_str = commit_info.get('timestamp', '')
+            
+            if debug: print(f"DEBUG: Commit timestamp string: '{commit_time_str}'")
+            
+            try:
+                # Try parsing as ISO format
+                commit_time = datetime.fromisoformat(commit_time_str)
+                valid_timestamps += 1
+                if debug: print(f"DEBUG: Valid timestamp: {commit_time}")
+                
+                if latest_commit_time is None or commit_time > latest_commit_time:
+                    latest_commit_time = commit_time
+                    if debug: print(f"DEBUG: New latest timestamp: {latest_commit_time}")
+            except (ValueError, TypeError) as e:
+                if debug: print(f"DEBUG: Invalid timestamp format: {e}")
+                
+                # For compatibility with older versions that might have used different formats
+                try:
+                    # Try standard ISO format without microseconds
+                    if 'T' in commit_time_str and '+' in commit_time_str:
+                        # Try removing timezone part if causing issues
+                        commit_time_str = commit_time_str.split('+')[0]
+                        commit_time = datetime.fromisoformat(commit_time_str)
+                        valid_timestamps += 1
+                        if debug: print(f"DEBUG: Fixed timestamp (removed tz): {commit_time}")
+                    # Try common date format without time
+                    elif len(commit_time_str) == 10 and commit_time_str.count('-') == 2:
+                        commit_time_str += "T00:00:00"
+                        commit_time = datetime.fromisoformat(commit_time_str)
+                        valid_timestamps += 1
+                        if debug: print(f"DEBUG: Fixed timestamp (added time): {commit_time}")
+                    # Try numeric timestamp (old versions)
+                    elif commit_time_str.isdigit():
+                        commit_time = datetime.fromtimestamp(float(commit_time_str))
+                        valid_timestamps += 1
+                        if debug: print(f"DEBUG: Fixed numeric timestamp: {commit_time}")
+                    
+                    if latest_commit_time is None or commit_time > latest_commit_time:
+                        latest_commit_time = commit_time
+                        if debug: print(f"DEBUG: New latest timestamp from fixed format: {latest_commit_time}")
+                except Exception as e2:
+                    if debug: print(f"DEBUG: Could not fix timestamp '{commit_time_str}': {e2}")
+                    continue
+        else:
+            if debug: print(f"DEBUG: Commit {commit_hash} not found in commit log")
+    
+    if debug: print(f"DEBUG: Found {valid_timestamps} valid timestamps out of {len(branch_commits)} commits")
+    
+    if latest_commit_time is None:
+        if force:
+            print("No valid commit timestamps found, but force upload requested. Proceeding with upload.")
+            # Use current time as latest commit time for force uploads
+            latest_commit_time = datetime.now()
+        else:
+            print(f"No valid commit timestamps found for branch '{branch_name}'. Nothing to upload.")
+            print("Use --force option to upload anyway.")
+            return False
+    
+    # Convert to ISO string for storage
+    latest_commit_time_str = latest_commit_time.isoformat()
+    if debug: print(f"DEBUG: Latest commit time: {latest_commit_time_str}")
+    
+    # Check if we've uploaded since the latest commit
+    last_upload_time_str = None
+    if last_upload_path.exists():
+        try:
+            with open(last_upload_path, 'r') as f:
+                upload_data = json.load(f)
+                last_upload_time_str = upload_data.get(branch_name)
+                if debug: print(f"DEBUG: Last upload time string: '{last_upload_time_str}'")
+        except (json.JSONDecodeError, FileNotFoundError) as e:
+            if debug: print(f"DEBUG: Error reading last_upload.json: {e}")
+            pass
+    else:
+        if debug: print("DEBUG: No previous upload record found")
+    
+    # Compare timestamps if we have a previous upload and not forcing
+    if last_upload_time_str and not force:
+        try:
+            last_upload_time = datetime.fromisoformat(last_upload_time_str)
+            if debug: 
+                print(f"DEBUG: Last upload time: {last_upload_time}")
+                print(f"DEBUG: Latest commit time: {latest_commit_time}")
+            
+            # If last upload is newer or same as latest commit, abort
+            if last_upload_time >= latest_commit_time:
+                print(f"No new commits on branch '{branch_name}' since last upload. Nothing to upload.")
+                print("Use --force option to upload anyway.")
+                return False
+            else:
+                if debug: print(f"DEBUG: New commits found since last upload")
+        except (ValueError, TypeError) as e:
+            if debug: print(f"DEBUG: Invalid last upload timestamp format: {e}")
+            # If timestamp is invalid, continue with upload
+            pass
     
     # Create an archive of the data
     print(f"Preparing data for branch '{branch_name}'...")
@@ -298,6 +463,22 @@ def upload_data(project_root, branch_name, auth_data=None):
             if response.status_code in [200, 201]:
                 result = response.json()
                 print(f"Upload successful! {result.get('message', '')}")
+                
+                # Save the upload time for this branch
+                upload_data = {}
+                if last_upload_path.exists():
+                    try:
+                        with open(last_upload_path, 'r') as f:
+                            upload_data = json.load(f)
+                    except json.JSONDecodeError:
+                        pass
+                
+                # Store latest commit time as ISO string
+                upload_data[branch_name] = latest_commit_time_str
+                
+                with open(last_upload_path, 'w') as f:
+                    json.dump(upload_data, f, indent=2)
+                    
                 return True
             else:
                 print(f"Upload failed with status code {response.status_code}.")
@@ -312,13 +493,17 @@ def upload_data(project_root, branch_name, auth_data=None):
         if archive_path.exists():
             os.unlink(archive_path)
 
-def download_data(project_root, branch_name, auth_data=None):
+def download_data(project_root, branch_name, auth_data=None, debug=False):
     """Download FLVCS data for a branch from the server
     
     Args:
         project_root: Path to the project root
         branch_name: Name of the branch to download
         auth_data: Optional authentication data. If provided, authentication step is skipped
+        debug: If True, print debug information
+        
+    Returns:
+        bool: True if download was successful, False otherwise
     """
     # Ensure authentication if not provided
     if auth_data is None:
@@ -357,6 +542,90 @@ def download_data(project_root, branch_name, auth_data=None):
             # Clean up
             os.unlink(temp_file_path)
             
+            # After successful download, update the last upload time for this branch
+            # This prevents unnecessary uploads of the same data
+            flvcs_dir = project_root / '.flvcs'
+            last_upload_path = flvcs_dir / 'last_upload.json'
+            
+            # Get the latest commit time for the branch after download
+            commit_log_path = flvcs_dir / 'commit_log.json'
+            if commit_log_path.exists():
+                with open(commit_log_path, 'r') as f:
+                    commit_log = json.load(f)
+                
+                # Load metadata to get branch history
+                metadata_path = flvcs_dir / 'metadata.json'
+                latest_commit_time = None
+                
+                if metadata_path.exists():
+                    with open(metadata_path, 'r') as f:
+                        metadata = json.load(f)
+                        branch_history = metadata.get('branch_history', {})
+                        
+                        # Get commits for the branch
+                        branch_commits = []
+                        if branch_name in branch_history:
+                            branch_info = branch_history[branch_name]
+                            if isinstance(branch_info, dict) and 'commits' in branch_info:
+                                branch_commits = branch_info['commits']
+                            elif isinstance(branch_info, list):
+                                branch_commits = branch_info
+                        
+                        if not branch_commits:
+                            # Fallback to searching commit log
+                            for commit_hash, info in commit_log.items():
+                                if info.get('branch') == branch_name:
+                                    branch_commits.append(commit_hash)
+                        
+                        # Find the latest commit time
+                        for commit_hash in branch_commits:
+                            if commit_hash in commit_log:
+                                commit_time_str = commit_log[commit_hash].get('timestamp', '')
+                                try:
+                                    # Try parsing as ISO format
+                                    commit_time = datetime.fromisoformat(commit_time_str)
+                                    if latest_commit_time is None or commit_time > latest_commit_time:
+                                        latest_commit_time = commit_time
+                                except (ValueError, TypeError):
+                                    # Try alternative formats
+                                    try:
+                                        # Try standard ISO format without microseconds
+                                        if 'T' in commit_time_str and '+' in commit_time_str:
+                                            # Try removing timezone part if causing issues
+                                            commit_time_str = commit_time_str.split('+')[0]
+                                            commit_time = datetime.fromisoformat(commit_time_str)
+                                        # Try common date format without time
+                                        elif len(commit_time_str) == 10 and commit_time_str.count('-') == 2:
+                                            commit_time_str += "T00:00:00"
+                                            commit_time = datetime.fromisoformat(commit_time_str)
+                                        # Try numeric timestamp (old versions)
+                                        elif commit_time_str.isdigit():
+                                            commit_time = datetime.fromtimestamp(float(commit_time_str))
+                                        
+                                        if latest_commit_time is None or commit_time > latest_commit_time:
+                                            latest_commit_time = commit_time
+                                    except Exception:
+                                        # If all parsing fails, continue to next commit
+                                        continue
+                        
+                        if latest_commit_time is not None:
+                            # Convert to ISO string for storage
+                            latest_commit_time_str = latest_commit_time.isoformat()
+                            
+                            # Update the last upload time
+                            upload_data = {}
+                            if last_upload_path.exists():
+                                try:
+                                    with open(last_upload_path, 'r') as f:
+                                        upload_data = json.load(f)
+                                except json.JSONDecodeError:
+                                    pass
+                            
+                            upload_data[branch_name] = latest_commit_time_str
+                            
+                            with open(last_upload_path, 'w') as f:
+                                json.dump(upload_data, f, indent=2)
+            
             print("Download and update successful!")
             return True
         else:
@@ -366,4 +635,54 @@ def download_data(project_root, branch_name, auth_data=None):
             return False
     except Exception as e:
         print(f"Error during download: {str(e)}")
+        return False
+
+def reset_upload_tracking(project_root, branch_name=None):
+    """Reset the upload timestamp tracking for one or all branches.
+    
+    This can be used to force the system to recognize commits as new after errors.
+    
+    Args:
+        project_root: Path to the project root
+        branch_name: Name of the branch to reset. If None, all branches are reset.
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        flvcs_dir = project_root / '.flvcs'
+        last_upload_path = flvcs_dir / 'last_upload.json'
+        
+        if not last_upload_path.exists():
+            print("No upload tracking file found. Nothing to reset.")
+            return True
+            
+        if branch_name is None:
+            # Reset all branches by deleting the file
+            os.unlink(last_upload_path)
+            print("Reset upload tracking for all branches.")
+            return True
+        else:
+            # Reset specific branch
+            upload_data = {}
+            try:
+                with open(last_upload_path, 'r') as f:
+                    upload_data = json.load(f)
+            except json.JSONDecodeError:
+                # Invalid JSON, just reset the file
+                os.unlink(last_upload_path)
+                print(f"Reset upload tracking for branch '{branch_name}' (and all others due to file corruption).")
+                return True
+                
+            if branch_name in upload_data:
+                del upload_data[branch_name]
+                with open(last_upload_path, 'w') as f:
+                    json.dump(upload_data, f, indent=2)
+                print(f"Reset upload tracking for branch '{branch_name}'.")
+            else:
+                print(f"No upload tracking found for branch '{branch_name}'. Nothing to reset.")
+                
+            return True
+    except Exception as e:
+        print(f"Error resetting upload tracking: {str(e)}")
         return False 
