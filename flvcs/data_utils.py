@@ -89,45 +89,60 @@ def ensure_authenticated():
     return auth_data
 
 def create_archive(project_root, branch_name):
-    """Create a zip archive of the FLVCS data for the current branch"""
+    """Create a zip archive of the complete FLVCS project for sharing
+    
+    This archives the entire .flvcs directory and the project file for
+    a complete backup that can be restored on another machine.
+    """
     flvcs_dir = project_root / '.flvcs'
     
     # Create a temporary directory to store the files to be uploaded
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
         
-        # Copy the essential files - we only need to upload the commit data and logs
-        # for the current branch, not all project files
-        os.makedirs(temp_path / 'commits', exist_ok=True)
+        # Create a nested directory structure
+        project_temp_dir = temp_path / project_root.name
+        os.makedirs(project_temp_dir, exist_ok=True)
         
-        # Copy metadata and commit log
-        shutil.copy2(flvcs_dir / 'metadata.json', temp_path)
-        shutil.copy2(flvcs_dir / 'commit_log.json', temp_path)
+        # Create .flvcs subdirectory
+        temp_flvcs_dir = project_temp_dir / '.flvcs'
+        os.makedirs(temp_flvcs_dir, exist_ok=True)
         
-        # Get the commit log to determine which commits to include
-        with open(flvcs_dir / 'commit_log.json', 'r') as f:
-            commit_log = json.load(f)
+        # Copy the entire .flvcs directory structure
+        shutil.copytree(flvcs_dir, temp_flvcs_dir, dirs_exist_ok=True)
         
-        # Load metadata to get branch information
-        with open(flvcs_dir / 'metadata.json', 'r') as f:
-            metadata = json.load(f)
+        # Find and copy the project file
+        metadata_path = flvcs_dir / 'metadata.json'
+        if metadata_path.exists():
+            with open(metadata_path, 'r') as f:
+                metadata = json.load(f)
+                project_name = metadata.get('project_name', '')
+                
+                # Try to find the project file by name
+                if project_name:
+                    # Look for any file matching the project name with any extension
+                    for file_path in project_root.glob(f"{project_name}.*"):
+                        if file_path.is_file() and not file_path.name.startswith('.'):
+                            shutil.copy2(file_path, project_temp_dir / file_path.name)
+                            break
         
-        # For each commit related to this branch
-        branch_commits = []
-        for commit_hash, commit_info in commit_log.items():
-            if commit_info.get('branch') == branch_name:
-                branch_commits.append(commit_hash)
-                commit_dir = flvcs_dir / 'commits' / commit_hash
-                if commit_dir.exists():
-                    shutil.copytree(commit_dir, temp_path / 'commits' / commit_hash)
-            
-        # Create the archive
-        archive_path = temp_path.parent / f"{project_root.name}_{branch_name}.zip"
+        # If we couldn't find a project file by name, copy any likely project file
+        if not any(project_temp_dir.glob("*.*")):
+            # Get any file in the current directory that might be a project file
+            for file_path in project_root.glob("*.*"):
+                if file_path.is_file() and not file_path.name.startswith('.'):
+                    shutil.copy2(file_path, project_temp_dir / file_path.name)
+                    break
+        
+        # Create the archive with just the project name (no branch or UID)
+        archive_path = temp_path.parent / f"{project_root.name}.zip"
         with zipfile.ZipFile(archive_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-            for root, _, files in os.walk(temp_path):
+            for root, dirs, files in os.walk(temp_path):
                 for file in files:
                     file_path = Path(root) / file
-                    zipf.write(file_path, file_path.relative_to(temp_path))
+                    # Set arcname to be relative to temp_path
+                    arcname = file_path.relative_to(temp_path)
+                    zipf.write(file_path, arcname)
         
         return archive_path
 
@@ -142,6 +157,21 @@ def extract_archive(archive_path, project_root):
         # Extract the archive
         with zipfile.ZipFile(archive_path, 'r') as zipf:
             zipf.extractall(temp_path)
+        
+        # Check for the new structure where files are in project/... and project/.flvcs/...
+        temp_project_dir = None
+        for item in os.listdir(temp_path):
+            if os.path.isdir(temp_path / item) and (temp_path / item / '.flvcs').exists():
+                temp_project_dir = temp_path / item
+                break
+        
+        # If we found the project directory with the new structure
+        if temp_project_dir:
+            # Use the new structure
+            temp_flvcs_dir = temp_project_dir / '.flvcs'
+        else:
+            # Fall back to the old structure where files are directly in the root
+            temp_flvcs_dir = temp_path
         
         # Load the existing metadata and commit log to merge
         local_metadata_path = flvcs_dir / 'metadata.json'
@@ -158,8 +188,8 @@ def extract_archive(archive_path, project_root):
                 local_commit_log = json.load(f)
         
         # Load the downloaded metadata and commit log
-        downloaded_metadata_path = temp_path / 'metadata.json'
-        downloaded_commit_log_path = temp_path / 'commit_log.json'
+        downloaded_metadata_path = temp_flvcs_dir / 'metadata.json'
+        downloaded_commit_log_path = temp_flvcs_dir / 'commit_log.json'
         
         downloaded_metadata = {}
         if downloaded_metadata_path.exists():
@@ -210,11 +240,22 @@ def extract_archive(archive_path, project_root):
         # Copy the commit directories
         os.makedirs(flvcs_dir / 'commits', exist_ok=True)
         for commit_hash in downloaded_commit_log.keys():
-            src_commit_dir = temp_path / 'commits' / commit_hash
+            src_commit_dir = temp_flvcs_dir / 'commits' / commit_hash
             dest_commit_dir = flvcs_dir / 'commits' / commit_hash
             
             if src_commit_dir.exists() and not dest_commit_dir.exists():
                 shutil.copytree(src_commit_dir, dest_commit_dir)
+        
+        # Copy any project files from the downloaded archive if present
+        if temp_project_dir:
+            for item in os.listdir(temp_project_dir):
+                if item != '.flvcs':  # Skip the .flvcs directory
+                    src_path = temp_project_dir / item
+                    dest_path = project_root / item
+                    
+                    if src_path.is_file() and not dest_path.exists():
+                        shutil.copy2(src_path, dest_path)
+                        print(f"Restored project file: {item}")
 
 def upload_data(project_root, branch_name, auth_data=None):
     """Upload FLVCS data for a branch to the server
@@ -237,22 +278,31 @@ def upload_data(project_root, branch_name, auth_data=None):
     
     try:
         with open(archive_path, 'rb') as f:
-            files = {'file': (archive_path.name, f)}
+            # Send only the project name (no branch) in the filename
+            filename = f"{project_root.name}.zip"
+            files = {'file': (filename, f)}
             data = {
                 'uid': auth_data['uid'],
                 'branch': branch_name,
                 'project': project_root.name
             }
             
-            response = requests.post(API_ENDPOINTS['upload'], files=files, data=data)
+            # Include the User-ID header
+            headers = {
+                'User-ID': auth_data['uid']
+            }
             
-            if response.status_code == 200:
+            response = requests.post(API_ENDPOINTS['upload'], files=files, data=data, headers=headers)
+            
+            # Check if response status is 200 or 201 (both indicate success)
+            if response.status_code in [200, 201]:
                 result = response.json()
                 print(f"Upload successful! {result.get('message', '')}")
                 return True
             else:
-                print(f"Upload failed. Status code: {response.status_code}")
-                print(response.text)
+                print(f"Upload failed with status code {response.status_code}.")
+                if response.text:
+                    print(f"Server message: {response.text}")
                 return False
     except Exception as e:
         print(f"Error during upload: {str(e)}")
@@ -284,7 +334,12 @@ def download_data(project_root, branch_name, auth_data=None):
             'project': project_root.name
         }
         
-        response = requests.get(API_ENDPOINTS['download'], params=params, stream=True)
+        # Include the User-ID header
+        headers = {
+            'User-ID': auth_data['uid']
+        }
+        
+        response = requests.get(API_ENDPOINTS['download'], params=params, headers=headers, stream=True)
         
         if response.status_code == 200:
             # Save the downloaded file
@@ -305,8 +360,9 @@ def download_data(project_root, branch_name, auth_data=None):
             print("Download and update successful!")
             return True
         else:
-            print(f"Download failed. Status code: {response.status_code}")
-            print(response.text)
+            print(f"Download failed with status code {response.status_code}.")
+            if response.text:
+                print(f"Server message: {response.text}")
             return False
     except Exception as e:
         print(f"Error during download: {str(e)}")
