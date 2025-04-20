@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import json
 from flvcs.main import DAWVCS
+from flvcs.data_utils import upload_data, download_data, ensure_authenticated, delete_user_auth
 from tabulate import tabulate
 from datetime import datetime
 
@@ -342,6 +343,77 @@ def delete(commit_hash):
         
         vcs.delete_commit(commit_hash)
         click.echo(f"Deleted commit {commit_hash} from the current branch")
+    except Exception as e:
+        click.echo(f"Error: {str(e)}", err=True)
+
+@cli.command()
+def upload():
+    """Upload the current branch data to the server"""
+    try:
+        ensure_in_project()
+        project_root = find_project_root()
+        project_file = get_project_file()
+        vcs = DAWVCS(project_file)
+        
+        # Get current branch
+        current_branch = vcs.get_current_branch()
+        
+        click.echo(f"Uploading branch '{current_branch}' to server...")
+        success = upload_data(project_root, current_branch)
+        
+        if success:
+            click.echo(f"Successfully uploaded branch '{current_branch}'")
+        else:
+            click.echo(f"Failed to upload branch '{current_branch}'")
+    except Exception as e:
+        click.echo(f"Error: {str(e)}", err=True)
+
+@cli.command()
+@click.option('--branch', help='Specific branch to download (defaults to current branch)')
+def download(branch):
+    """Download branch data from the server and update local files"""
+    try:
+        ensure_in_project()
+        project_root = find_project_root()
+        project_file = get_project_file()
+        vcs = DAWVCS(project_file)
+        
+        # Use specified branch or current branch
+        if branch:
+            branch_name = branch
+        else:
+            branch_name = vcs.get_current_branch()
+        
+        click.echo(f"Downloading branch '{branch_name}' from server...")
+        success = download_data(project_root, branch_name)
+        
+        if success:
+            click.echo(f"Successfully downloaded branch '{branch_name}'")
+            
+            # If the download was for the current branch, reload the project file
+            if branch_name == vcs.get_current_branch():
+                click.echo("Updating local project file...")
+                
+                # Get the latest commit for this branch to checkout
+                commits = vcs.list_commits()
+                if commits:
+                    latest_commit = commits[0]['hash']
+                    vcs.checkout(latest_commit)
+                    click.echo(f"Updated project file to latest commit ({latest_commit})")
+        else:
+            click.echo(f"Failed to download branch '{branch_name}'")
+    except Exception as e:
+        click.echo(f"Error: {str(e)}", err=True)
+
+@cli.command(name="delete-cred")
+def delete_cred():
+    """Delete stored authentication credentials"""
+    try:
+        if delete_user_auth():
+            click.echo("Authentication credentials successfully deleted.")
+            click.echo("You will need to reauthenticate on your next upload or download.")
+        else:
+            click.echo("No authentication credentials found.")
     except Exception as e:
         click.echo(f"Error: {str(e)}", err=True)
 

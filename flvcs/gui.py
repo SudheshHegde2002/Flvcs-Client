@@ -9,12 +9,14 @@ from PyQt5.QtWidgets import (
     QPushButton, QLabel, QLineEdit, QTextEdit, QTabWidget, 
     QTableWidget, QTableWidgetItem, QHeaderView, QFileDialog,
     QComboBox, QMessageBox, QSplitter, QFrame, QTreeWidget, 
-    QTreeWidgetItem, QGroupBox, QFormLayout, QStatusBar
+    QTreeWidgetItem, QGroupBox, QFormLayout, QStatusBar, QInputDialog,
+    QDialog
 )
 from PyQt5.QtCore import Qt, QSize
 from PyQt5.QtGui import QFont, QColor, QPalette, QIcon
 
 from flvcs.main import DAWVCS
+from flvcs.data_utils import upload_data, download_data, ensure_authenticated, load_user_auth, delete_user_auth
 
 # Define theme colors
 COLORS = {
@@ -152,6 +154,46 @@ class CommitDialog(QWidget):
         self.cancel_button.clicked.connect(self.close)
 
 
+class AuthDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("FLVCS Authentication")
+        self.setFixedSize(400, 200)
+        
+        layout = QVBoxLayout(self)
+        
+        # Information label
+        info_label = QLabel(
+            "Please log in using your browser.\n"
+            "After logging in, you will receive a UID.\n"
+            "Enter that UID below:"
+        )
+        info_label.setWordWrap(True)
+        layout.addWidget(info_label)
+        
+        # UID field
+        uid_layout = QHBoxLayout()
+        uid_layout.addWidget(QLabel("UID:"))
+        self.uid_field = QLineEdit()
+        self.uid_field.setEchoMode(QLineEdit.Password)  # Mask the input for security
+        uid_layout.addWidget(self.uid_field)
+        layout.addLayout(uid_layout)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        self.cancel_button = QPushButton("Cancel")
+        self.ok_button = QPushButton("OK")
+        self.ok_button.setDefault(True)
+        
+        button_layout.addWidget(self.cancel_button)
+        button_layout.addWidget(self.ok_button)
+        layout.addLayout(button_layout)
+        
+        # Connect signals
+        self.cancel_button.clicked.connect(self.reject)
+        self.ok_button.clicked.connect(self.accept)
+
+
 class FLVCSMainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -227,8 +269,25 @@ class FLVCSMainWindow(QMainWindow):
         actions_row2.addWidget(self.commit_message, 7)
         actions_row2.addWidget(self.commit_button, 3)
         
+        # Add sync buttons
+        actions_row3 = QHBoxLayout()
+        self.upload_button = QPushButton("Upload")
+        self.upload_button.setStyleSheet(f"background-color: #3F51B5; color: white;")  # Indigo
+        self.download_button = QPushButton("Download")
+        self.download_button.setStyleSheet(f"background-color: #3F51B5; color: white;")  # Indigo
+        actions_row3.addWidget(self.upload_button)
+        actions_row3.addWidget(self.download_button)
+        
+        # Add credentials management
+        actions_row4 = QHBoxLayout()
+        self.delete_cred_button = QPushButton("Delete Credentials")
+        self.delete_cred_button.setStyleSheet(f"background-color: #E57373; color: white;")  # Red button
+        actions_row4.addWidget(self.delete_cred_button)
+        
         actions_layout.addLayout(actions_row1)
         actions_layout.addLayout(actions_row2)
+        actions_layout.addLayout(actions_row3)
+        actions_layout.addLayout(actions_row4)
         
         top_layout.addWidget(actions_group, 7)
         
@@ -239,6 +298,9 @@ class FLVCSMainWindow(QMainWindow):
         self.open_button.clicked.connect(self.open_project)
         self.refresh_button.clicked.connect(self.refresh_ui)
         self.commit_button.clicked.connect(self.create_commit)
+        self.upload_button.clicked.connect(self.upload_branch)
+        self.download_button.clicked.connect(self.download_branch)
+        self.delete_cred_button.clicked.connect(self.delete_credentials)
     
     def create_commits_tab(self):
         commits_widget = QWidget()
@@ -841,6 +903,167 @@ class FLVCSMainWindow(QMainWindow):
             self.refresh_ui()
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error deleting branch: {str(e)}")
+    
+    def upload_branch(self):
+        """Upload current branch to server"""
+        if not self.vcs:
+            QMessageBox.warning(self, "No Project", "No project loaded.")
+            return
+            
+        try:
+            # Check if user is already authenticated
+            auth_data = load_user_auth()
+            
+            if auth_data is None or "uid" not in auth_data:
+                # Import webbrowser here to avoid importing at module level
+                import webbrowser
+                from flvcs.data_utils import API_ENDPOINTS, save_user_auth
+                
+                # Open the login page in browser
+                webbrowser.open(API_ENDPOINTS['login'])
+                
+                # Show dialog to get UID
+                auth_dialog = AuthDialog(self)
+                if auth_dialog.exec_() != QDialog.Accepted:
+                    return  # User cancelled
+                    
+                uid = auth_dialog.uid_field.text().strip()
+                if not uid:
+                    QMessageBox.warning(self, "Authentication Failed", "No UID provided.")
+                    return
+                    
+                # Save the UID
+                save_user_auth(uid)
+                auth_data = {"uid": uid}
+                
+            current_branch = self.vcs.get_current_branch()
+            
+            # Get the project root
+            project_root = Path.cwd()
+            
+            # Show a loading message
+            self.status_bar.showMessage(f"Uploading branch '{current_branch}' to server...")
+            
+            # Perform the upload with the auth_data we already have
+            success = upload_data(project_root, current_branch, auth_data)
+            
+            if success:
+                QMessageBox.information(self, "Upload Successful", 
+                                        f"Successfully uploaded branch '{current_branch}' to server.")
+                self.status_bar.showMessage(f"Upload successful")
+            else:
+                QMessageBox.warning(self, "Upload Failed", 
+                                    f"Failed to upload branch '{current_branch}' to server.")
+                self.status_bar.showMessage(f"Upload failed")
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error uploading branch: {str(e)}")
+            self.status_bar.showMessage("Upload error")
+    
+    def download_branch(self):
+        """Download branch from server"""
+        if not self.vcs:
+            QMessageBox.warning(self, "No Project", "No project loaded.")
+            return
+            
+        try:
+            # Check if user is already authenticated
+            auth_data = load_user_auth()
+            
+            if auth_data is None or "uid" not in auth_data:
+                # Import webbrowser here to avoid importing at module level
+                import webbrowser
+                from flvcs.data_utils import API_ENDPOINTS, save_user_auth
+                
+                # Open the login page in browser
+                webbrowser.open(API_ENDPOINTS['login'])
+                
+                # Show dialog to get UID
+                auth_dialog = AuthDialog(self)
+                if auth_dialog.exec_() != QDialog.Accepted:
+                    return  # User cancelled
+                    
+                uid = auth_dialog.uid_field.text().strip()
+                if not uid:
+                    QMessageBox.warning(self, "Authentication Failed", "No UID provided.")
+                    return
+                    
+                # Save the UID
+                save_user_auth(uid)
+                auth_data = {"uid": uid}
+                
+            current_branch = self.vcs.get_current_branch()
+            branches = self.vcs.list_branches()
+            
+            # Let the user choose which branch to download
+            branch_name, ok = QInputDialog.getItem(
+                self, "Select Branch", 
+                "Select which branch to download:", 
+                branches, 
+                branches.index(current_branch) if current_branch in branches else 0,
+                False
+            )
+            
+            if not ok or not branch_name:
+                return
+                
+            # Get the project root
+            project_root = Path.cwd()
+            
+            # Show a loading message
+            self.status_bar.showMessage(f"Downloading branch '{branch_name}' from server...")
+            
+            # Perform the download with the auth_data we already have
+            success = download_data(project_root, branch_name, auth_data)
+            
+            if success:
+                QMessageBox.information(self, "Download Successful", 
+                                        f"Successfully downloaded branch '{branch_name}' from server.")
+                
+                # If the downloaded branch is the current branch, update the project file
+                if branch_name == current_branch:
+                    # Get the latest commit for this branch to checkout
+                    commits = self.vcs.list_commits()
+                    if commits:
+                        latest_commit = commits[0]['hash']
+                        self.vcs.checkout(latest_commit)
+                
+                # Refresh the UI to reflect changes
+                self.refresh_ui()
+                self.status_bar.showMessage(f"Download successful")
+            else:
+                QMessageBox.warning(self, "Download Failed", 
+                                    f"Failed to download branch '{branch_name}' from server.")
+                self.status_bar.showMessage(f"Download failed")
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error downloading branch: {str(e)}")
+            self.status_bar.showMessage("Download error")
+
+    def delete_credentials(self):
+        """Delete stored authentication credentials"""
+        try:
+            result = QMessageBox.question(
+                self, "Delete Credentials", 
+                "Are you sure you want to delete your authentication credentials?\n\n"
+                "You will need to re-authenticate on your next upload or download.",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No  # Default is No to prevent accidental deletion
+            )
+            
+            if result != QMessageBox.Yes:
+                return
+                
+            if delete_user_auth():
+                QMessageBox.information(self, "Success", "Authentication credentials deleted successfully.")
+                self.status_bar.showMessage("Authentication credentials deleted")
+            else:
+                QMessageBox.information(self, "No Credentials", "No authentication credentials were found.")
+                self.status_bar.showMessage("No authentication credentials found")
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error deleting credentials: {str(e)}")
+            self.status_bar.showMessage("Error deleting credentials")
 
 
 def run_gui():
