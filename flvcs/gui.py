@@ -10,25 +10,28 @@ from PyQt5.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QFileDialog,
     QComboBox, QMessageBox, QSplitter, QFrame, QTreeWidget, 
     QTreeWidgetItem, QGroupBox, QFormLayout, QStatusBar, QInputDialog,
-    QDialog
+    QDialog, QTabBar
 )
 from PyQt5.QtCore import Qt, QSize
 from PyQt5.QtGui import QFont, QColor, QPalette, QIcon
 
 from flvcs.main import DAWVCS
-from flvcs.data_utils import upload_data, download_data, ensure_authenticated, load_user_auth, delete_user_auth, reset_upload_tracking
+from flvcs.data_utils import upload_data, download_data, ensure_authenticated, load_user_auth, delete_user_auth
 
 # Define theme colors
 COLORS = {
-    'primary': '#7B68EE',  # Medium slate blue
-    'secondary': '#9370DB',  # Medium purple
-    'background': '#2D2D30',  # Dark background
-    'text': '#E0E0E0',  # Light text
-    'accent': '#B39DDB',  # Light purple
-    'success': '#81C784',  # Light green
-    'hover': '#8A75F5',  # Slightly lighter primary
-    'border': '#4A4A4D',  # Darker border
-    'commit_bg': '#352F59',  # Dark purplish background
+    'primary': '#6246EA',  # A vibrant purple
+    'secondary': '#9D8DF1',  # Lighter purple
+    'background': '#2F2F36',  # Dark background with slight blue tint
+    'text': '#F0F0F0',  # Brighter white text
+    'accent': '#B8B5FF',  # Very light purple accent
+    'success': '#4CAF50',  # More vibrant green for success actions
+    'hover': '#7860FF',  # Brighter hover state
+    'border': '#3E3E45',  # Slightly blue-tinted border
+    'commit_bg': '#353547',  # Dark purplish background
+    'button_primary': '#6246EA',  # Button primary color
+    'button_secondary': '#4361EE',  # Button secondary color (blueish)
+    'button_danger': '#E63946',  # Danger actions (more vibrant red)
 }
 
 class StyleHelper:
@@ -46,12 +49,13 @@ class StyleHelper:
             }}
             
             QPushButton {{
-                background-color: {COLORS['primary']};
+                background-color: {COLORS['button_primary']};
                 color: white;
                 border: none;
                 padding: 8px 16px;
                 border-radius: 4px;
                 font-weight: bold;
+                margin: 2px;
             }}
             
             QPushButton:hover {{
@@ -66,8 +70,9 @@ class StyleHelper:
                 background-color: {COLORS['border']};
                 border: 1px solid {COLORS['secondary']};
                 border-radius: 4px;
-                padding: 5px;
+                padding: 8px;
                 color: {COLORS['text']};
+                selection-background-color: {COLORS['secondary']};
             }}
             
             QTableWidget, QTreeWidget {{
@@ -75,42 +80,57 @@ class StyleHelper:
                 alternate-background-color: {COLORS['border']};
                 border: 1px solid {COLORS['border']};
                 gridline-color: {COLORS['border']};
+                selection-background-color: {COLORS['primary']};
+                selection-color: white;
             }}
             
             QTableWidget::item, QTreeWidget::item {{
-                padding: 4px;
+                padding: 6px;
             }}
             
             QHeaderView::section {{
                 background-color: {COLORS['primary']};
                 color: white;
-                padding: 5px;
+                padding: 8px;
                 border: none;
+                font-weight: bold;
+            }}
+            
+            QTabWidget {{
+                background-color: {COLORS['background']};
             }}
             
             QTabWidget::pane {{
                 border: 1px solid {COLORS['border']};
                 border-radius: 4px;
+                top: -1px;
             }}
             
             QTabBar::tab {{
                 background-color: {COLORS['background']};
                 color: {COLORS['text']};
-                padding: 8px 16px;
-                border-top-left-radius: 4px;
-                border-top-right-radius: 4px;
-                margin-right: 2px;
+                padding: 10px 25px;
+                border-top-left-radius: 6px;
+                border-top-right-radius: 6px;
+                margin-right: 4px;
+                font-weight: bold;
+                min-width: 120px;
+                text-align: center;
+                border: 1px solid {COLORS['border']};
+                border-bottom: none; /* No border at the bottom */
             }}
             
             QTabBar::tab:selected {{
                 background-color: {COLORS['primary']};
                 color: white;
+                margin-bottom: -1px; /* Overlap with the pane border */
             }}
             
             QGroupBox {{
                 border: 1px solid {COLORS['border']};
                 border-radius: 4px;
-                margin-top: 10px;
+                margin-top: 12px;
+                padding-top: 16px;
                 font-weight: bold;
             }}
             
@@ -118,10 +138,21 @@ class StyleHelper:
                 subcontrol-origin: margin;
                 left: 10px;
                 padding: 0 5px 0 5px;
+                color: {COLORS['accent']};
             }}
             
             QSplitter::handle {{
                 background-color: {COLORS['border']};
+            }}
+            
+            QLabel {{
+                padding: 2px;
+            }}
+            
+            QStatusBar {{
+                background-color: {COLORS['border']};
+                color: {COLORS['text']};
+                padding: 5px;
             }}
         """
 
@@ -218,6 +249,19 @@ class FLVCSMainWindow(QMainWindow):
         
         # Create the tab widget for different views
         self.tabs = QTabWidget()
+        # Ensure tab bar has enough height and proper font
+        self.tabs.setTabBar(QTabBar())
+        self.tabs.tabBar().setMinimumHeight(40)
+        
+        # Set tab font to ensure clear rendering
+        tab_font = QFont()
+        tab_font.setPointSize(10)
+        tab_font.setBold(True)
+        self.tabs.tabBar().setFont(tab_font)
+        
+        # Add some space around the tab contents
+        self.tabs.setContentsMargins(10, 10, 10, 10)
+        
         self.main_layout.addWidget(self.tabs)
         
         # Create tabs
@@ -272,20 +316,19 @@ class FLVCSMainWindow(QMainWindow):
         # Add sync buttons
         actions_row3 = QHBoxLayout()
         self.upload_button = QPushButton("Upload")
-        self.upload_button.setStyleSheet(f"background-color: #3F51B5; color: white;")  # Indigo
+        self.upload_button.setStyleSheet(f"background-color: {COLORS['button_secondary']}; color: white;")
         self.download_button = QPushButton("Download")
-        self.download_button.setStyleSheet(f"background-color: #3F51B5; color: white;")  # Indigo
-        self.reset_tracking_button = QPushButton("Reset Tracking")
-        self.reset_tracking_button.setStyleSheet(f"background-color: #FF9800; color: white;")  # Orange
+        self.download_button.setStyleSheet(f"background-color: {COLORS['button_secondary']}; color: white;")
         actions_row3.addWidget(self.upload_button)
         actions_row3.addWidget(self.download_button)
-        actions_row3.addWidget(self.reset_tracking_button)
+        actions_row3.addStretch(1)  # Add stretch to balance layout
         
         # Add credentials management
         actions_row4 = QHBoxLayout()
         self.delete_cred_button = QPushButton("Delete Credentials")
-        self.delete_cred_button.setStyleSheet(f"background-color: #E57373; color: white;")  # Red button
+        self.delete_cred_button.setStyleSheet(f"background-color: {COLORS['button_danger']}; color: white;")
         actions_row4.addWidget(self.delete_cred_button)
+        actions_row4.addStretch(2)  # Add stretch to balance layout
         
         actions_layout.addLayout(actions_row1)
         actions_layout.addLayout(actions_row2)
@@ -304,11 +347,15 @@ class FLVCSMainWindow(QMainWindow):
         self.upload_button.clicked.connect(self.upload_branch)
         self.download_button.clicked.connect(self.download_branch)
         self.delete_cred_button.clicked.connect(self.delete_credentials)
-        self.reset_tracking_button.clicked.connect(self.reset_upload_tracking)
     
     def create_commits_tab(self):
         commits_widget = QWidget()
         commits_layout = QVBoxLayout(commits_widget)
+        
+        # Add heading
+        heading_label = QLabel("Commit History")
+        heading_label.setStyleSheet("font-size: 14pt; font-weight: bold; color: #B8B5FF; margin-bottom: 10px;")
+        commits_layout.addWidget(heading_label)
         
         # Commits table
         self.commits_table = QTableWidget()
@@ -318,9 +365,14 @@ class FLVCSMainWindow(QMainWindow):
         self.commits_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.commits_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
         self.commits_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        self.commits_table.setAlternatingRowColors(True)
+        self.commits_table.verticalHeader().setVisible(False)
+        self.commits_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.commits_table.setEditTriggers(QTableWidget.NoEditTriggers)
         
-        # Action buttons row
-        action_layout = QHBoxLayout()
+        # Action buttons row in a group box for better organization
+        actions_group = QGroupBox("Commit Actions")
+        action_layout = QHBoxLayout(actions_group)
         
         # Checkout section
         checkout_layout = QHBoxLayout()
@@ -335,16 +387,18 @@ class FLVCSMainWindow(QMainWindow):
         # Delete commit section
         delete_layout = QHBoxLayout()
         self.delete_commit_button = QPushButton("Delete Commit")
-        self.delete_commit_button.setStyleSheet(f"background-color: #E57373; color: white;")  # Red delete button
+        self.delete_commit_button.setStyleSheet(f"background-color: {COLORS['button_danger']}; color: white;")
         delete_layout.addWidget(self.delete_commit_button)
         
         action_layout.addLayout(checkout_layout, 7)
         action_layout.addLayout(delete_layout, 3)
         
         commits_layout.addWidget(self.commits_table)
-        commits_layout.addLayout(action_layout)
+        commits_layout.addWidget(actions_group)
         
-        self.tabs.addTab(commits_widget, "Commits")
+        # Add tab with explicit label
+        tab_index = self.tabs.addTab(commits_widget, "")
+        self.tabs.setTabText(tab_index, "Commits")
         
         # Connect signals
         self.checkout_button.clicked.connect(self.checkout_commit)
@@ -355,9 +409,14 @@ class FLVCSMainWindow(QMainWindow):
         branches_widget = QWidget()
         branches_layout = QVBoxLayout(branches_widget)
         
+        # Add heading
+        heading_label = QLabel("Branch Management")
+        heading_label.setStyleSheet("font-size: 14pt; font-weight: bold; color: #B8B5FF; margin-bottom: 10px;")
+        branches_layout.addWidget(heading_label)
+        
         # Branch management
-        create_branch_layout = QHBoxLayout()
-        create_branch_layout.addWidget(QLabel("Create new branch:"))
+        create_branch_group = QGroupBox("Create New Branch")
+        create_branch_layout = QHBoxLayout(create_branch_group)
         self.new_branch_name = QLineEdit()
         self.new_branch_name.setPlaceholderText("New branch name...")
         self.create_branch_button = QPushButton("Create Branch")
@@ -365,7 +424,7 @@ class FLVCSMainWindow(QMainWindow):
         create_branch_layout.addWidget(self.new_branch_name, 7)
         create_branch_layout.addWidget(self.create_branch_button, 3)
         
-        branches_layout.addLayout(create_branch_layout)
+        branches_layout.addWidget(create_branch_group)
         
         # Branches table
         self.branches_table = QTableWidget()
@@ -373,9 +432,14 @@ class FLVCSMainWindow(QMainWindow):
         self.branches_table.setHorizontalHeaderLabels(["Branch", "Status"])
         self.branches_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.branches_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.branches_table.setAlternatingRowColors(True)
+        self.branches_table.verticalHeader().setVisible(False)
+        self.branches_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.branches_table.setEditTriggers(QTableWidget.NoEditTriggers)
         
         # Branch actions section
-        actions_layout = QHBoxLayout()
+        actions_group = QGroupBox("Branch Actions")
+        actions_layout = QHBoxLayout(actions_group)
         
         # Switch branch section
         switch_layout = QHBoxLayout()
@@ -389,16 +453,18 @@ class FLVCSMainWindow(QMainWindow):
         # Delete branch section
         delete_layout = QHBoxLayout()
         self.delete_branch_button = QPushButton("Delete Branch")
-        self.delete_branch_button.setStyleSheet(f"background-color: #E57373; color: white;")  # Red delete button
+        self.delete_branch_button.setStyleSheet(f"background-color: {COLORS['button_danger']}; color: white;")
         delete_layout.addWidget(self.delete_branch_button)
         
         actions_layout.addLayout(switch_layout, 7)
         actions_layout.addLayout(delete_layout, 3)
         
         branches_layout.addWidget(self.branches_table)
-        branches_layout.addLayout(actions_layout)
+        branches_layout.addWidget(actions_group)
         
-        self.tabs.addTab(branches_widget, "Branches")
+        # Add tab with explicit label
+        tab_index = self.tabs.addTab(branches_widget, "")
+        self.tabs.setTabText(tab_index, "Branches")
         
         # Connect signals
         self.create_branch_button.clicked.connect(self.create_branch)
@@ -410,8 +476,16 @@ class FLVCSMainWindow(QMainWindow):
         stats_widget = QWidget()
         stats_layout = QVBoxLayout(stats_widget)
         
+        # Add heading
+        heading_label = QLabel("Project Statistics")
+        heading_label.setStyleSheet("font-size: 14pt; font-weight: bold; color: #B8B5FF; margin-bottom: 10px;")
+        stats_layout.addWidget(heading_label)
+        
+        # Create a horizontal layout for the stats groups
+        stats_horizontal = QHBoxLayout()
+        
         # Project statistics
-        self.stats_group = QGroupBox("Project Statistics")
+        self.stats_group = QGroupBox("Project Info")
         stats_form = QFormLayout(self.stats_group)
         
         self.created_at_label = QLabel("--")
@@ -419,26 +493,50 @@ class FLVCSMainWindow(QMainWindow):
         self.total_commits_label = QLabel("--")
         self.current_size_label = QLabel("--")
         
+        # Apply styling to value labels
+        value_style = "font-weight: bold; color: #9D8DF1;"
+        self.created_at_label.setStyleSheet(value_style)
+        self.last_modified_label.setStyleSheet(value_style)
+        self.total_commits_label.setStyleSheet(value_style)
+        self.current_size_label.setStyleSheet(value_style)
+        
         stats_form.addRow("Created:", self.created_at_label)
         stats_form.addRow("Last Modified:", self.last_modified_label)
         stats_form.addRow("Total Commits:", self.total_commits_label)
         stats_form.addRow("Current Size:", self.current_size_label)
         
         # Audio statistics
-        self.audio_group = QGroupBox("Audio Statistics")
+        self.audio_group = QGroupBox("Audio Stats")
         audio_form = QFormLayout(self.audio_group)
         
         self.audio_files_label = QLabel("--")
         self.audio_duration_label = QLabel("--")
         
+        # Apply styling to value labels
+        self.audio_files_label.setStyleSheet(value_style)
+        self.audio_duration_label.setStyleSheet(value_style)
+        
         audio_form.addRow("Total Audio Files:", self.audio_files_label)
         audio_form.addRow("Total Duration:", self.audio_duration_label)
         
-        stats_layout.addWidget(self.stats_group)
-        stats_layout.addWidget(self.audio_group)
+        # Add both groups to the horizontal layout
+        stats_horizontal.addWidget(self.stats_group)
+        stats_horizontal.addWidget(self.audio_group)
+        
+        stats_layout.addLayout(stats_horizontal)
+        
+        # Add informational text
+        info_label = QLabel("This tab displays statistics about your project. The audio statistics are gathered from rendered audio files in the project directory.")
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet("font-style: italic; color: #B8B5FF; padding: 10px;")
+        stats_layout.addWidget(info_label)
+        
+        # Add stretching space at the bottom
         stats_layout.addStretch()
         
-        self.tabs.addTab(stats_widget, "Statistics")
+        # Add tab with explicit label
+        tab_index = self.tabs.addTab(stats_widget, "")
+        self.tabs.setTabText(tab_index, "Statistics")
     
     def check_current_directory(self):
         """Check if the current directory is part of a VCS project"""
@@ -711,13 +809,26 @@ class FLVCSMainWindow(QMainWindow):
         size_history = metadata['project_stats']['size_history']
         if size_history:
             latest_size = size_history[-1]['size_bytes']
-            self.current_size_label.setText(f"{latest_size / 1024:.2f} KB")
+            size_kb = latest_size / 1024
+            if size_kb > 1024:
+                # Show in MB if larger than 1MB
+                self.current_size_label.setText(f"{size_kb / 1024:.2f} MB")
+            else:
+                self.current_size_label.setText(f"{size_kb:.2f} KB")
         
         # Audio statistics
-        audio_stats = metadata['audio_stats']
+        audio_stats = metadata.get('audio_stats', {})
         if audio_stats and audio_stats.get('total_audio_files', 0) > 0:
             self.audio_files_label.setText(str(audio_stats['total_audio_files']))
-            self.audio_duration_label.setText(f"{audio_stats['total_duration']:.2f} seconds")
+            
+            # Format duration for better readability
+            duration = audio_stats['total_duration']
+            if duration > 60:
+                minutes = int(duration // 60)
+                seconds = duration % 60
+                self.audio_duration_label.setText(f"{minutes} min {seconds:.1f} sec")
+            else:
+                self.audio_duration_label.setText(f"{duration:.2f} seconds")
         else:
             self.audio_files_label.setText("No audio files")
             self.audio_duration_label.setText("--")
@@ -1112,72 +1223,6 @@ class FLVCSMainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error deleting credentials: {str(e)}")
             self.status_bar.showMessage("Error deleting credentials")
-
-    def reset_upload_tracking(self):
-        """Reset upload tracking for the current branch or all branches"""
-        if not self.vcs:
-            QMessageBox.warning(self, "No Project", "No project loaded.")
-            return
-        
-        try:
-            current_branch = self.vcs.get_current_branch()
-            branches = self.vcs.list_branches()
-            
-            # Let the user choose which branch to reset or all branches
-            options = branches + ["All Branches"]
-            branch_name, ok = QInputDialog.getItem(
-                self, "Reset Upload Tracking", 
-                "Select which branch tracking to reset:", 
-                options, 
-                branches.index(current_branch) if current_branch in branches else 0,
-                False
-            )
-            
-            if not ok or not branch_name:
-                return
-            
-            # Get the project root
-            project_root = Path.cwd()
-            
-            if branch_name == "All Branches":
-                branch_param = None
-                message = "Are you sure you want to reset upload tracking for all branches?\n\n" \
-                         "This will allow re-uploading all branches even without new commits."
-            else:
-                branch_param = branch_name
-                message = f"Are you sure you want to reset upload tracking for branch '{branch_name}'?\n\n" \
-                          f"This will allow re-uploading this branch even without new commits."
-            
-            # Confirm action
-            result = QMessageBox.question(
-                self, "Confirm Reset", 
-                message,
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No
-            )
-            
-            if result != QMessageBox.Yes:
-                return
-            
-            success = reset_upload_tracking(project_root, branch_param)
-            
-            if success:
-                if branch_param:
-                    QMessageBox.information(self, "Success", 
-                                          f"Successfully reset upload tracking for branch '{branch_param}'.\n\n"
-                                          f"You can now upload this branch again.")
-                else:
-                    QMessageBox.information(self, "Success", 
-                                          "Successfully reset upload tracking for all branches.\n\n"
-                                          "You can now upload any branch again.")
-                self.status_bar.showMessage("Upload tracking reset successful")
-            else:
-                QMessageBox.warning(self, "Failed", "Failed to reset upload tracking.")
-                self.status_bar.showMessage("Upload tracking reset failed")
-            
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Error resetting upload tracking: {str(e)}")
-            self.status_bar.showMessage("Error resetting upload tracking")
 
 
 def run_gui():
