@@ -7,6 +7,61 @@ from flvcs.data_utils import upload_data, download_data, ensure_authenticated, d
 from tabulate import tabulate
 from datetime import datetime
 
+def upload(force, debug,commitMessage):
+    """Upload the current branch data to the server"""
+    try:
+        ensure_in_project()
+        project_root = find_project_root()
+        project_file = get_project_file()
+        vcs = DAWVCS(project_file)
+        
+        # Get current branch
+        current_branch = vcs.get_current_branch()
+        
+        click.echo(f"Uploading branch '{current_branch}' to server...")
+        
+        # Show stats about commits if debug is on
+        if debug:
+            metadata = vcs.get_metadata()
+            branch_history = metadata.get('branch_history', {})
+            commit_log = vcs._load_commit_log()
+            
+            click.echo(f"DEBUG: Total commits in log: {len(commit_log)}")
+            
+            # Count commits by branch
+            branch_counts = {}
+            for _, info in commit_log.items():
+                branch = info.get('branch', 'main')
+                branch_counts[branch] = branch_counts.get(branch, 0) + 1
+                
+            click.echo(f"DEBUG: Commits by branch: {branch_counts}")
+            
+            # Check if the branch exists in branch_history
+            if current_branch in branch_history:
+                branch_info = branch_history[current_branch]
+                if isinstance(branch_info, dict) and 'commits' in branch_info:
+                    click.echo(f"DEBUG: Branch '{current_branch}' has {len(branch_info['commits'])} commits in branch_history")
+                else:
+                    click.echo(f"DEBUG: Branch '{current_branch}' exists in branch_history but has no 'commits' field")
+            else:
+                click.echo(f"DEBUG: Branch '{current_branch}' not found in branch_history")
+                
+            # Count commits in log for current branch
+            current_branch_commits = [h for h, info in commit_log.items() if info.get('branch') == current_branch]
+            click.echo(f"DEBUG: Found {len(current_branch_commits)} commits for branch '{current_branch}' in commit log")
+        
+        # Add a parameter to upload_data to support force option
+        success = upload_data(project_root, current_branch,commitMessage, force=force, debug=debug)
+        
+        if success:
+            click.echo(f"Successfully uploaded branch '{current_branch}'")
+        else:
+            click.echo(f"Failed to upload branch '{current_branch}'")
+            click.echo("You can try using 'flvcs reset-tracking' to reset upload tracking,")
+            click.echo("or use 'flvcs upload --force' to force upload.")
+    except Exception as e:
+        click.echo(f"Error: {str(e)}", err=True)
+
 def find_project_root():
     """Find the nearest parent directory containing .flvcs"""
     current = Path.cwd()
@@ -109,14 +164,17 @@ def init(file):
         click.echo(f"Error: {str(e)}", err=True)
 
 @cli.command()
+@click.option('--force', is_flag=True, help='Force upload even if no new commits are present')
+@click.option('--debug', is_flag=True, help='Print debug information for troubleshooting')
 @click.argument('message')
-def commit(message):
+def commit(message,force,debug):
     """Create a new commit with the current project state"""
     try:
         ensure_in_project()
         project_file = get_project_file()
         vcs = DAWVCS(project_file)
         commit_hash = vcs.commit(message)
+        upload(force,debug,message)
         click.echo(f"Created commit {commit_hash}: {message}")
     except Exception as e:
         click.echo(f"Error: {str(e)}", err=True)
@@ -346,63 +404,6 @@ def delete(commit_hash):
     except Exception as e:
         click.echo(f"Error: {str(e)}", err=True)
 
-@cli.command()
-@click.option('--force', is_flag=True, help='Force upload even if no new commits are present')
-@click.option('--debug', is_flag=True, help='Print debug information for troubleshooting')
-def upload(force, debug):
-    """Upload the current branch data to the server"""
-    try:
-        ensure_in_project()
-        project_root = find_project_root()
-        project_file = get_project_file()
-        vcs = DAWVCS(project_file)
-        
-        # Get current branch
-        current_branch = vcs.get_current_branch()
-        
-        click.echo(f"Uploading branch '{current_branch}' to server...")
-        
-        # Show stats about commits if debug is on
-        if debug:
-            metadata = vcs.get_metadata()
-            branch_history = metadata.get('branch_history', {})
-            commit_log = vcs._load_commit_log()
-            
-            click.echo(f"DEBUG: Total commits in log: {len(commit_log)}")
-            
-            # Count commits by branch
-            branch_counts = {}
-            for _, info in commit_log.items():
-                branch = info.get('branch', 'main')
-                branch_counts[branch] = branch_counts.get(branch, 0) + 1
-                
-            click.echo(f"DEBUG: Commits by branch: {branch_counts}")
-            
-            # Check if the branch exists in branch_history
-            if current_branch in branch_history:
-                branch_info = branch_history[current_branch]
-                if isinstance(branch_info, dict) and 'commits' in branch_info:
-                    click.echo(f"DEBUG: Branch '{current_branch}' has {len(branch_info['commits'])} commits in branch_history")
-                else:
-                    click.echo(f"DEBUG: Branch '{current_branch}' exists in branch_history but has no 'commits' field")
-            else:
-                click.echo(f"DEBUG: Branch '{current_branch}' not found in branch_history")
-                
-            # Count commits in log for current branch
-            current_branch_commits = [h for h, info in commit_log.items() if info.get('branch') == current_branch]
-            click.echo(f"DEBUG: Found {len(current_branch_commits)} commits for branch '{current_branch}' in commit log")
-        
-        # Add a parameter to upload_data to support force option
-        success = upload_data(project_root, current_branch, force=force, debug=debug)
-        
-        if success:
-            click.echo(f"Successfully uploaded branch '{current_branch}'")
-        else:
-            click.echo(f"Failed to upload branch '{current_branch}'")
-            click.echo("You can try using 'flvcs reset-tracking' to reset upload tracking,")
-            click.echo("or use 'flvcs upload --force' to force upload.")
-    except Exception as e:
-        click.echo(f"Error: {str(e)}", err=True)
 
 @cli.command()
 @click.option('--branch', help='Specific branch to download (defaults to current branch)')

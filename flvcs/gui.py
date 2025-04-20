@@ -16,8 +16,8 @@ from PyQt5.QtCore import Qt, QSize
 from PyQt5.QtGui import QFont, QColor, QPalette, QIcon
 
 from flvcs.main import DAWVCS
-from flvcs.data_utils import upload_data, download_data, ensure_authenticated, load_user_auth, delete_user_auth
-
+from flvcs.data_utils import download_data, ensure_authenticated, load_user_auth, delete_user_auth
+from flvcs.cli import upload
 # Define theme colors
 COLORS = {
     'primary': '#6246EA',  # A vibrant purple
@@ -315,11 +315,8 @@ class FLVCSMainWindow(QMainWindow):
         
         # Add sync buttons
         actions_row3 = QHBoxLayout()
-        self.upload_button = QPushButton("Upload")
-        self.upload_button.setStyleSheet(f"background-color: {COLORS['button_secondary']}; color: white;")
         self.download_button = QPushButton("Download")
         self.download_button.setStyleSheet(f"background-color: {COLORS['button_secondary']}; color: white;")
-        actions_row3.addWidget(self.upload_button)
         actions_row3.addWidget(self.download_button)
         actions_row3.addStretch(1)  # Add stretch to balance layout
         
@@ -344,7 +341,6 @@ class FLVCSMainWindow(QMainWindow):
         self.open_button.clicked.connect(self.open_project)
         self.refresh_button.clicked.connect(self.refresh_ui)
         self.commit_button.clicked.connect(self.create_commit)
-        self.upload_button.clicked.connect(self.upload_branch)
         self.download_button.clicked.connect(self.download_branch)
         self.delete_cred_button.clicked.connect(self.delete_credentials)
     
@@ -845,8 +841,11 @@ class FLVCSMainWindow(QMainWindow):
             return
             
         try:
+            force = False
+            debug = False
+            upload(force,debug,message)
             commit_hash = self.vcs.commit(message)
-            QMessageBox.information(self, "Success", f"Created commit: {commit_hash}")
+            QMessageBox.information(self, "Success, Uploaded to cloud", f"Created commit: {commit_hash}")
             self.commit_message.clear()
             self.refresh_ui()
         except Exception as e:
@@ -1019,106 +1018,6 @@ class FLVCSMainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error deleting branch: {str(e)}")
     
-    def upload_branch(self):
-        """Upload current branch to server"""
-        if not self.vcs:
-            QMessageBox.warning(self, "No Project", "No project loaded.")
-            return
-            
-        try:
-            # Check if user is already authenticated
-            auth_data = load_user_auth()
-            
-            if auth_data is None or "uid" not in auth_data:
-                # Import webbrowser here to avoid importing at module level
-                import webbrowser
-                from flvcs.data_utils import API_ENDPOINTS, save_user_auth
-                
-                # Open the login page in browser
-                webbrowser.open(API_ENDPOINTS['login'])
-                
-                # Show dialog to get UID
-                auth_dialog = AuthDialog(self)
-                if auth_dialog.exec_() != QDialog.Accepted:
-                    return  # User cancelled
-                    
-                uid = auth_dialog.uid_field.text().strip()
-                if not uid:
-                    QMessageBox.warning(self, "Authentication Failed", "No UID provided.")
-                    return
-                    
-                # Save the UID
-                save_user_auth(uid)
-                auth_data = {"uid": uid}
-                
-            current_branch = self.vcs.get_current_branch()
-            
-            # Get the project root
-            project_root = Path.cwd()
-            
-            # First attempt a non-forced upload
-            force = False
-            
-            # Show a loading message
-            self.status_bar.showMessage(f"Uploading branch '{current_branch}' to server...")
-            
-            # Perform the upload with the auth_data we already have
-            success = upload_data(project_root, current_branch, auth_data, force)
-            
-            # If the upload failed due to no new commits, offer to force upload
-            if not success:
-                # Check if there are any commits at all - if not, don't offer force
-                flvcs_dir = project_root / '.flvcs'
-                commit_log_path = flvcs_dir / 'commit_log.json'
-                metadata_path = flvcs_dir / 'metadata.json'
-                
-                if not commit_log_path.exists() or not metadata_path.exists():
-                    QMessageBox.warning(self, "Upload Failed", 
-                                      "No commits found for this branch. Cannot upload.")
-                    self.status_bar.showMessage(f"Upload failed - no commits")
-                    return
-                    
-                # Load the metadata to check if the branch has commits
-                with open(metadata_path, 'r') as f:
-                    metadata = json.load(f)
-                    branch_history = metadata.get('branch_history', {})
-                    branch_commits = branch_history.get(current_branch, [])
-                    
-                if not branch_commits:
-                    QMessageBox.warning(self, "Upload Failed", 
-                                      "No commits found for this branch. Cannot upload.")
-                    self.status_bar.showMessage(f"Upload failed - no commits")
-                    return
-                    
-                # We have commits but they haven't changed - ask to force upload
-                result = QMessageBox.question(
-                    self, "No New Commits", 
-                    "No new commits since last upload. Do you want to force upload anyway?",
-                    QMessageBox.Yes | QMessageBox.No,
-                    QMessageBox.No
-                )
-                
-                if result == QMessageBox.Yes:
-                    force = True
-                    self.status_bar.showMessage(f"Force uploading branch '{current_branch}' to server...")
-                    success = upload_data(project_root, current_branch, auth_data, force)
-                else:
-                    self.status_bar.showMessage(f"Upload cancelled")
-                    return
-            
-            if success:
-                QMessageBox.information(self, "Upload Successful", 
-                                        f"Successfully uploaded branch '{current_branch}' to server.")
-                self.status_bar.showMessage(f"Upload successful")
-            else:
-                QMessageBox.warning(self, "Upload Failed", 
-                                  f"Failed to upload branch '{current_branch}' to server.")
-                self.status_bar.showMessage(f"Upload failed")
-                
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Error uploading branch: {str(e)}")
-            self.status_bar.showMessage("Upload error")
-    
     def download_branch(self):
         """Download branch from server"""
         if not self.vcs:
@@ -1205,7 +1104,7 @@ class FLVCSMainWindow(QMainWindow):
             result = QMessageBox.question(
                 self, "Delete Credentials", 
                 "Are you sure you want to delete your authentication credentials?\n\n"
-                "You will need to re-authenticate on your next upload or download.",
+                "You will need to re-authenticate on your next download.",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No  # Default is No to prevent accidental deletion
             )

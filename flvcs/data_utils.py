@@ -258,7 +258,7 @@ def extract_archive(archive_path, project_root):
                         shutil.copy2(src_path, dest_path)
                         print(f"Restored project file: {item}")
 
-def upload_data(project_root, branch_name, auth_data=None, force=False, debug=False):
+def upload_data(project_root, branch_name,commit_message, auth_data=None, force=False, debug=False, ):
     """Upload FLVCS data for a branch to the server
     
     Args:
@@ -267,6 +267,7 @@ def upload_data(project_root, branch_name, auth_data=None, force=False, debug=Fa
         auth_data: Optional authentication data. If provided, authentication step is skipped
         force: If True, upload even if no new commits since last upload
         debug: If True, print debug information
+        commit_message: Optional commit message to send to the server
         
     Returns:
         bool: True if upload was successful, False otherwise
@@ -332,7 +333,8 @@ def upload_data(project_root, branch_name, auth_data=None, force=False, debug=Fa
     latest_commit_time = None
     valid_timestamps = 0
     
-    # Find the latest commit time (as ISO string)
+    # Find the latest commit time (as ISO string) and latest commit message if needed
+    latest_commit_hash = None
     for i, commit_hash in enumerate(branch_commits):
         if debug: print(f"DEBUG: Processing commit {i+1}/{len(branch_commits)}: {commit_hash}")
         
@@ -350,6 +352,7 @@ def upload_data(project_root, branch_name, auth_data=None, force=False, debug=Fa
                 
                 if latest_commit_time is None or commit_time > latest_commit_time:
                     latest_commit_time = commit_time
+                    latest_commit_hash = commit_hash
                     if debug: print(f"DEBUG: New latest timestamp: {latest_commit_time}")
             except (ValueError, TypeError) as e:
                 if debug: print(f"DEBUG: Invalid timestamp format: {e}")
@@ -377,6 +380,7 @@ def upload_data(project_root, branch_name, auth_data=None, force=False, debug=Fa
                     
                     if latest_commit_time is None or commit_time > latest_commit_time:
                         latest_commit_time = commit_time
+                        latest_commit_hash = commit_hash
                         if debug: print(f"DEBUG: New latest timestamp from fixed format: {latest_commit_time}")
                 except Exception as e2:
                     if debug: print(f"DEBUG: Could not fix timestamp '{commit_time_str}': {e2}")
@@ -446,18 +450,27 @@ def upload_data(project_root, branch_name, auth_data=None, force=False, debug=Fa
             # Send only the project name (no branch) in the filename
             filename = f"{project_root.name}.zip"
             files = {'file': (filename, f)}
-            data = {
-                'uid': auth_data['uid'],
-                'branch': branch_name,
-                'project': project_root.name
-            }
             
+            # If commit_message is not provided, try to get the latest commit message
+            if commit_message is None and latest_commit_hash and latest_commit_hash in commit_log:
+                commit_message = commit_log[latest_commit_hash].get('message', '')
+                
+            form_data = {
+            'json': json.dumps({
+            'project_id': project_root.name,
+            'message': commit_message or ''
+          })
+       }
+             
+            files = {
+        'file': (filename, f, 'application/zip')
+         }
             # Include the User-ID header
             headers = {
                 'User-ID': auth_data['uid']
             }
             
-            response = requests.post(API_ENDPOINTS['upload'], files=files, data=data, headers=headers)
+            response = requests.post(API_ENDPOINTS['upload'], files=files, data=form_data, headers=headers)
             
             # Check if response status is 200 or 201 (both indicate success)
             if response.status_code in [200, 201]:
