@@ -236,6 +236,11 @@ class FLVCSMainWindow(QMainWindow):
         self.setWindowTitle("FLVCS")
         self.setMinimumSize(900, 600)
         
+        # Set application icon
+        icon_path = os.path.join(os.path.dirname(__file__), 'Icon.png')
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
+        
         # Apply stylesheet
         self.setStyleSheet(StyleHelper.get_stylesheet())
         
@@ -1126,6 +1131,22 @@ class FLVCSMainWindow(QMainWindow):
 
 def run_gui():
     app = QApplication(sys.argv)
+    
+    # Set application icon
+    icon_path = os.path.join(os.path.dirname(__file__), 'Icon.png')
+    if os.path.exists(icon_path):
+        app_icon = QIcon(icon_path)
+        app.setWindowIcon(app_icon)
+        
+        # For Windows: Set the taskbar icon properly
+        if sys.platform == 'win32':
+            try:
+                import ctypes
+                myappid = 'flvcs.client.app.1'  # Arbitrary string for Windows to identify your app
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+            except Exception as e:
+                print(f"Warning: Could not set Windows taskbar icon: {str(e)}")
+    
     window = FLVCSMainWindow()
     window.show()
     sys.exit(app.exec_())
