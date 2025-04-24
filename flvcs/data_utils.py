@@ -449,28 +449,37 @@ def upload_data(project_root, branch_name,commit_message, auth_data=None, force=
         with open(archive_path, 'rb') as f:
             # Send only the project name (no branch) in the filename
             filename = f"{project_root.name}.zip"
-            files = {'file': (filename, f)}
             
-            # If commit_message is not provided, try to get the latest commit message
             if commit_message is None and latest_commit_hash and latest_commit_hash in commit_log:
                 commit_message = commit_log[latest_commit_hash].get('message', '')
-                
+
+            # Prepare the JSON data with project_id, message, and branch name
+            json_data = {
+                'project_id': project_root.name,
+                'message': commit_message or '',
+                'branch': branch_name
+            }
+            
+            # Create the form data with the JSON content
             form_data = {
-            'json': json.dumps({
-            'project_id': project_root.name,
-            'message': commit_message or ''
-          })
-       }
-             
+                'json': json.dumps(json_data)
+            }
+            
+            # Prepare the file for upload
             files = {
-        'file': (filename, f, 'application/zip')
-         }
+                'file': (filename, f, 'application/zip')
+            }
+            
             # Include the User-ID header
             headers = {
                 'User-ID': auth_data['uid']
             }
             
-            response = requests.post(API_ENDPOINTS['upload'], files=files, data=form_data, headers=headers)
+            # Send the request with both form_data and files
+            response = requests.post(API_ENDPOINTS['upload'], 
+                                   files=files, 
+                                   data=form_data, 
+                                   headers=headers)
             
             # Check if response status is 200 or 201 (both indicate success)
             if response.status_code in [200, 201]:
@@ -526,10 +535,10 @@ def download_data(project_root, branch_name, auth_data=None, debug=False):
     print(f"Downloading data for branch '{branch_name}' from {API_ENDPOINTS['download']}...")
     
     try:
+        # Create consistent params structure with the same fields as upload
         params = {
-            'uid': auth_data['uid'],
-            'branch': branch_name,
-            'project': project_root.name
+            'project_id': project_root.name,
+            'branch': branch_name
         }
         
         # Include the User-ID header
