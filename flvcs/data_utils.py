@@ -14,9 +14,9 @@ from datetime import datetime
 
 # API endpoints - centralized for easier updates when moving to production
 API_ENDPOINTS = {
-    "login": "http://localhost:3000/login-from-client",
-    "upload": "http://localhost:5000/upload",
-    "download": "http://localhost:5000/download"
+    "login": "https://flvcs.netlify.app/login-from-client", #frontend
+    "upload": "https://flvcs-f7ccb.el.r.appspot.com/upload",#backend
+    "download": "https://flvcs-f7ccb.el.r.appspot.com/download" #backend
 }
 
 # Local storage for user credentials

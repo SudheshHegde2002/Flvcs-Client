@@ -16,8 +16,8 @@ from PyQt5.QtCore import Qt, QSize
 from PyQt5.QtGui import QFont, QColor, QPalette, QIcon
 
 from flvcs.main import DAWVCS
-from flvcs.data_utils import download_data, ensure_authenticated, load_user_auth, delete_user_auth
-from flvcs.cli import upload
+from flvcs.data_utils import download_data, ensure_authenticated, load_user_auth, delete_user_auth, upload_data
+from flvcs.cli import upload, find_project_root
 # Define theme colors
 COLORS = {
     'primary': '#6246EA',  # A vibrant purple
@@ -846,11 +846,64 @@ class FLVCSMainWindow(QMainWindow):
             return
             
         try:
+            # Check if user is already authenticated before attempting upload
+            auth_data = load_user_auth()
+            
+            if auth_data is None or "uid" not in auth_data:
+                # Import webbrowser here to avoid importing at module level
+                import webbrowser
+                from flvcs.data_utils import API_ENDPOINTS, save_user_auth
+                
+                # Open the login page in browser
+                webbrowser.open(API_ENDPOINTS['login'])
+                
+                # Show dialog to get UID
+                auth_dialog = AuthDialog(self)
+                if auth_dialog.exec_() != QDialog.Accepted:
+                    # User cancelled authentication
+                    response = QMessageBox.question(
+                        self, "Continue Without Upload", 
+                        "You cancelled authentication. Do you want to create a local commit without uploading?",
+                        QMessageBox.Yes | QMessageBox.No,
+                        QMessageBox.Yes
+                    )
+                    if response != QMessageBox.Yes:
+                        return  # User doesn't want to commit without uploading
+                        
+                    # Create commit locally only
+                    commit_hash = self.vcs.commit(message)
+                    QMessageBox.information(self, "Success (Local Only)", f"Created local commit: {commit_hash}")
+                    self.commit_message.clear()
+                    self.refresh_ui()
+                    return
+                    
+                uid = auth_dialog.uid_field.text().strip()
+                if not uid:
+                    QMessageBox.warning(self, "Authentication Failed", "No UID provided.")
+                    return
+                    
+                # Save the UID
+                save_user_auth(uid)
+                auth_data = {"uid": uid}
+            
+            # Proceed with commit and upload
+            project_root = find_project_root()
+            current_branch = self.vcs.get_current_branch()
+            
+            # First create the commit
+            commit_hash = self.vcs.commit(message)
+            
+            # Then upload with the authenticated user
             force = False
             debug = False
-            upload(force,debug,message)
-            commit_hash = self.vcs.commit(message)
-            QMessageBox.information(self, "Success, Uploaded to cloud", f"Created commit: {commit_hash}")
+            success = upload_data(project_root, current_branch, message, auth_data=auth_data, force=force, debug=debug)
+            
+            if success:
+                QMessageBox.information(self, "Success", f"Created commit: {commit_hash} and uploaded to cloud")
+            else:
+                QMessageBox.information(self, "Partial Success", 
+                                       f"Created commit: {commit_hash} locally, but upload to cloud failed")
+            
             self.commit_message.clear()
             self.refresh_ui()
         except Exception as e:
